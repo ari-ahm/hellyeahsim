@@ -47,6 +47,9 @@ Notes for working on HELL YEAH SIMULATOR. User-facing docs are in `README.md`.
   The left hand never does the horn pose (user preference).
   Debug: `HYS.hands('horn','graze')`, `HYS.steer(1)`, `HYS.gfx(1)` for the clean HD look.
 - **Can:** top along hand −X (`CAN_ROT = rotZ(π/2)`), opening faces can-local +Z. Use `canHandQ(up, backHint)`.
+  The thumb points at the lid, so the grip sits low (`canAnchor`/`CAN_LOCAL` x = −0.04) and can poses keep `thumb` ≈ 0.45 — more wrap pushes it through the wall.
+- **Cig:** held a touch above `MOUTH` and rolled so the ember clears the knuckles; the camera dips (not lifts) during a drag so the cherry stays in frame.
+- **Rearview mirror** must stay inside the top of the frame (y ≈ 1.40 at z −0.45 with the −0.12 camera pitch); higher and it's silently off-screen.
 - **Steering power:** `cab.steerPower` — right top 1, right horn 0.9, left top 0.85, left graze 0.5, no hands 0 (the NO HANDS pop needs 0.3 s of zero hands).
 - **Music:** all songs are original. Never embed or transcribe copyrighted songs — the mixtape lets users load their own files.
 - Post shader runs **after** `OutputPass` (display space). Colors > 1 in `glow()` materials feed bloom.

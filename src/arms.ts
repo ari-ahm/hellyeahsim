@@ -163,7 +163,7 @@ export class Arm {
 
     const hb = this.bones[2];
     // can sits under the palm, axis along the thumb direction
-    this.canAnchor.position.set(0, -0.047, -0.07);
+    this.canAnchor.position.set(-side * 0.04, -0.047, -0.07); // grip low on the can so the thumb clears the lid
     this.cigAnchor.position.set(-side * 0.02, 0.0, -0.113);
     this.tipAnchor.position.set(-side * 0.035, -0.02, -0.17);
     hb.add(this.canAnchor, this.cigAnchor, this.tipAnchor);

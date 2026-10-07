@@ -41,7 +41,7 @@ const Q_PALM_FACE = basisQ(V3(-1, 0, 0), V3(0, 0, -1), V3(0, -1, 0));
 const Q_BACK_FACE = basisQ(V3(1, 0, 0), V3(0, 0, 1), V3(0, -1, 0));
 const Q_FLAT = new THREE.Quaternion();
 
-const CAN_LOCAL = V3(0, -0.06, -0.078);
+const CAN_LOCAL = V3(-0.04, -0.06, -0.078);
 const CIG_FILTER_LOCAL = V3(-0.02, -0.05, -0.113);
 const TIP_LOCAL_L = V3(0.04, -0.035, -0.18);
 const CAN_ROT = rotZ(Math.PI / 2);
@@ -152,7 +152,6 @@ export class Interior {
   can: THREE.Group;
   canTab: THREE.Group;
   canObj: Can;
-  chug = 0;
   cig: THREE.Group;
   ember: THREE.Mesh;
   flame: THREE.Sprite;
@@ -610,22 +609,22 @@ export class Interior {
     r.add(pack);
 
     // --- mirror, dice, freshener
-    r.add(beam(V3(CX, 1.6, -0.4), V3(CX, 1.49, -0.45), 0.018, 0.018, darker));
+    r.add(beam(V3(CX, 1.6, -0.4), V3(CX, 1.42, -0.45), 0.018, 0.018, darker));
     const mirrorBack = new THREE.Mesh(new RoundedBoxGeometry(0.3, 0.085, 0.03, 2, 0.012), darker);
-    mirrorBack.position.set(CX, 1.47, -0.465);
+    mirrorBack.position.set(CX, 1.4, -0.465); // low enough to sit inside the top of the frame
     mirrorBack.scale.set(0.85, 0.85, 1);
     mirrorBack.rotation.x = -0.12;
     r.add(mirrorBack);
     const mirror = new THREE.Mesh(new THREE.PlaneGeometry(0.28, 0.07), new THREE.MeshBasicMaterial({ map: this.mirrorRT.texture }));
     const uv = mirror.geometry.attributes.uv;
     for (let i = 0; i < uv.count; i++) uv.setX(i, 1 - uv.getX(i));
-    mirror.position.set(CX, 1.47, -0.449);
+    mirror.position.set(CX, 1.4, -0.449);
     mirror.scale.set(0.85, 0.85, 1);
     mirror.rotation.x = -0.12;
     r.add(mirror);
 
     const pivot = new THREE.Group();
-    pivot.position.set(CX + 0.1, 1.44, -0.465);
+    pivot.position.set(CX + 0.1, 1.37, -0.465);
     r.add(pivot);
     const diceMats = [1, 6, 2, 5, 3, 4].map((n) => pbr(0xffffff, 0.95, 0, { map: Art.diceFace(n), sheen: 1, sheenColor: new THREE.Color(0xff88cc) }));
     for (const [dx, len] of [[-0.02, 0.045], [0.025, 0.06]]) {
@@ -731,7 +730,7 @@ export class Interior {
     const atMouth = (U: THREE.Vector3) => M.clone().addScaledVector(U, 0.062);
     const back = V3(1, 0.15, 0.1);
     const backChug = V3(1, 0.0, -0.9).normalize();
-    const CAN_LOW = V3(-0.03, -0.06, -0.078); // grip toward the bottom of the can so the can (not the fist) owns the frame
+    const CAN_LOW = V3(-0.07, -0.06, -0.078); // grip toward the bottom of the can so the can (not the fist) owns the frame
     const qCup = canHandQ(V3(0, 1, 0), back);
     const qHold = canHandQ(upHold, back);
     const qA = canHandQ(chugA.clone().negate(), backChug);
@@ -762,26 +761,26 @@ export class Interior {
       R: [
         { t: 0, pose: null },
         { t: 0.42, pose: P(cup, qCup, CAN_LOCAL, 0.2, 0.2) },
-        { t: 0.58, pose: P(cup, qCup, CAN_LOCAL, 1.15, 1.0) },
-        { t: 1.05, pose: P(hold, qHold, CAN_LOCAL, 1.15, 1.0) },
-        { t: 1.68, pose: P(hold, qHold, CAN_LOCAL, 1.15, 1.0) },
-        { t: 1.76, pose: P(hold.clone().add(V3(0, -0.008, 0)), qHold, CAN_LOCAL, 1.2, 1.05) },
-        { t: 2.3, pose: P(hold.clone().add(V3(0, 0.005, 0)), qHold, CAN_LOCAL, 1.15, 1.0) },
-        { t: 2.75, pose: P(atMouth(chugA), qA, CAN_LOW, 1.15, 1.0) },
-        { t: 3.85, pose: P(atMouth(chugB), qB, CAN_LOW, 1.15, 1.0) },
-        { t: 4.12, pose: P(V3(0.15, 0.97, -0.36), qCrush, CAN_LOCAL, 1.55, 1.3) },
-        { t: 4.38, pose: P(V3(0.46, 1.02, -0.46), qToss, CAN_LOCAL, 1.3, 1.0) },
+        { t: 0.58, pose: P(cup, qCup, CAN_LOCAL, 1.15, 0.45) },
+        { t: 1.05, pose: P(hold, qHold, CAN_LOCAL, 1.15, 0.45) },
+        { t: 1.68, pose: P(hold, qHold, CAN_LOCAL, 1.15, 0.45) },
+        { t: 1.76, pose: P(hold.clone().add(V3(0, -0.008, 0)), qHold, CAN_LOCAL, 1.2, 0.5) },
+        { t: 2.3, pose: P(hold.clone().add(V3(0, 0.005, 0)), qHold, CAN_LOCAL, 1.15, 0.45) },
+        { t: 2.75, pose: P(atMouth(chugA), qA, CAN_LOW, 1.15, 0.45) },
+        { t: 3.85, pose: P(atMouth(chugB), qB, CAN_LOW, 1.15, 0.45) },
+        { t: 4.12, pose: P(V3(0.15, 0.97, -0.36), qCrush, CAN_LOCAL, 1.55, 0.7) },
+        { t: 4.38, pose: P(V3(0.46, 1.02, -0.46), qToss, CAN_LOCAL, 1.3, 0.45) },
         { t: 4.46, pose: P(V3(0.47, 1.03, -0.47), qToss, CAN_LOCAL, 0.15, 0.2) },
         { t: 5.1, pose: null },
       ],
       L: [
         { t: 0, pose: null },
-        { t: 0.9, pose: null },
+        { t: 0.62, pose: null },
         { t: 1.3, pose: tabPose(0.012, 0.0, 0.25) },
         { t: 1.45, pose: tabPose(0.002, 0.0, 0.55) },
         { t: 1.72, pose: tabPose(0.02, 0.006, 1.0) },
         { t: 1.95, pose: tabPose(0.004, -0.004, 0.35) },
-        { t: 2.45, pose: null },
+        { t: 2.7, pose: null },
       ],
       events,
       cam: (t) => {
@@ -799,7 +798,6 @@ export class Interior {
         else tabT = 0.2;
         c.tab.rotation.x = tabT;
         c.flap.rotation.x = t < 1.62 ? 0 : Math.min(1.45, smooth((t - 1.62) / 0.12) * 1.45);
-        this.chug = t > 2.75 && t < 3.85 ? Math.min(1, (t - 2.75) / 0.2) * Math.min(1, (3.85 - t) / 0.15) : 0;
         if (t > 4.02 && t < 4.2) this.can.scale.set(1, lerp(1, 0.45, (t - 4.02) / 0.12), 1);
         if (t > 1.75 && t < 2.6 && Math.random() < 0.5) this.foam();
       },
@@ -810,9 +808,11 @@ export class Interior {
     const h = this.hooks;
     const first = this.cigDrags <= 0;
     const qCool = qmul(rotY(-0.9), qmul(rotX(-0.5), Q_PALM_FACE));
-    const qMouth = qmul(rotZ(0.75), qmul(rotY(-0.35), qmul(rotX(-0.75), Q_PALM_FACE)));
-    const mouth = P(MOUTH, qMouth, CIG_FILTER_LOCAL, 0.4, 0.3);
-    const mouth2 = P(MOUTH.clone().add(V3(0, 0, 0.008)), qMouth, CIG_FILTER_LOCAL, 0.4, 0.3);
+    const qMouth = qmul(rotZ(1.25), qmul(rotY(-0.35), qmul(rotX(-0.75), Q_PALM_FACE)));
+    // held a touch high so the cherry peeks into the bottom of the frame
+    const lips = MOUTH.clone().add(V3(0, 0.03, -0.015));
+    const mouth = P(lips, qMouth, CIG_FILTER_LOCAL, 0.4, 0.3);
+    const mouth2 = P(lips.clone().add(V3(0, 0, 0.008)), qMouth, CIG_FILTER_LOCAL, 0.4, 0.3);
     const cool = W(V3(0.28, 0.97, -0.42), qCool, [0.35, 0.4, 1.2, 1.3], 0.6);
     const keys: Key[] = [{ t: 0, pose: null }];
     const events: Ev[] = [];
@@ -850,12 +850,15 @@ export class Interior {
       events,
       cam: (t) => {
         const a = off + 0.4, b = off + 1.8;
-        return t > a && t < b ? 0.13 * Math.sin(((t - a) / (b - a)) * Math.PI) : 0;
+        return t > a && t < b ? -0.06 * Math.sin(((t - a) / (b - a)) * Math.PI) : 0;
       },
       tick: (t) => {
         const m = this.ember.material as THREE.MeshBasicMaterial;
-        const k = t > inhaleAt && t < off + 1.7 ? 4 + Math.sin(t * 20) * 0.8 : 1.2;
+        // the cherry flares while he drags on it
+        const drag = smooth(clamp((t - inhaleAt) / 0.2, 0, 1)) * smooth(clamp((off + 1.75 - t) / 0.25, 0, 1));
+        const k = 1.2 + drag * (5 + Math.sin(t * 20) * 1.2);
         if (this.cigLit) m.color.setRGB(k, k * 0.28, 0.05);
+        this.ember.scale.set(1 + drag * 0.25, 0.6 + drag * 0.2, 1 + drag * 0.25);
       },
     });
   }
@@ -1011,7 +1014,6 @@ export class Interior {
     this.cig.visible = false;
     this.can.visible = false;
     this.action = null;
-    this.chug = 0;
     this.pumpTarget = 0;
   }
 
@@ -1239,7 +1241,6 @@ export class Interior {
         if (a.L) L = this.sample(a.L, Math.min(a.t, a.dur), restL.pose);
         if (a.t >= a.dur) {
           this.action = null;
-          this.chug = 0;
         }
       }
       const winOK = this.winHeld && !(this.action && this.action.L);

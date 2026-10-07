@@ -15,7 +15,6 @@ export const MindShader = {
     aspect: { value: 1 },
     trip: { value: 0 },
     mode: { value: 0 },
-    chug: { value: 0 },
     rain: { value: 0 },
     flash: { value: 0 },
     kill: { value: 0 },
@@ -24,7 +23,7 @@ export const MindShader = {
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: `
 uniform sampler2D tDiffuse;
-uniform float time, drunk, smoke, hell, damage, speed, blackout, aspect, trip, chug, rain, flash, kill;
+uniform float time, drunk, smoke, hell, damage, speed, blackout, aspect, trip, rain, flash, kill;
 uniform int mode;
 uniform vec2 res;
 varying vec2 vUv;
@@ -104,17 +103,6 @@ void main(){
     col = mix(col, mix(vec3(L) * vec3(0.85, 0.9, 1.05), col * vec3(1.4, 0.5, 0.5), red), kill * 0.75);
   }
   col += flash * vec3(0.75, 0.8, 1.0);
-  if (chug > 0.001) {
-    // the beer is coming. it is coming fast. it fills your entire world.
-    float lvl = 0.16 * chug + 0.025 * sin(uv.x * 11.0 + time * 7.0) + 0.018 * sin(uv.x * 27.0 - time * 11.0);
-    float m = smoothstep(lvl, lvl - 0.035, uv.y);
-    vec2 bc = floor(vec2(uv.x * 70.0, uv.y * 70.0 - time * 14.0));
-    float bub = step(0.975, hash(bc)) * m;
-    vec3 beer = mix(vec3(0.55, 0.28, 0.02), vec3(1.0, 0.72, 0.18), clamp(uv.y / max(lvl, 0.01), 0.0, 1.0));
-    float foam = smoothstep(0.02, 0.0, abs(uv.y - lvl + 0.012)) * chug;
-    col = mix(col, beer + bub * 0.5, m * 0.78 * chug);
-    col = mix(col, vec3(1.0, 0.97, 0.88), foam * 0.85);
-  }
   float vig = length(c * vec2(aspect, 1.0));
   col = mix(col, vec3(0.6, 0.0, 0.05), damage * smoothstep(0.25, 0.9, vig));
 

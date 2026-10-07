@@ -51,8 +51,8 @@ takes a few seconds while the forearm is forged in a Web Worker.
   Nets and skinned to an 18-bone rig. Veins throb with your heart rate, pump when you flex and glow like lava
   in HELL YEAH mode. The right hand drapes over the wheel like the meme; the left rests out the window and
   grazes the wheel when the right hand is busy.
-- **Vices** — fully animated beer (grab, ring-pull with the other hand, fizz, chug with a beer-flood overlay,
-  crush, toss onto a growing pile), cigarettes (light, inhale, exhale smoke into the cabin, flick the butt),
+- **Vices** — fully animated beer (grab, ring-pull with the other hand, fizz, chug, crush, toss onto a growing
+  pile), cigarettes (light, inhale with the cherry flaring in view, exhale smoke into the cabin, flick the butt),
   blood alcohol (drunk vision, steering drift, blackouts) and lung HP (coughing fits, a chance of lung
   cancer at 0).
 - **Driving** — endless curving highway, traffic, deer, cops with a heat level, near misses, burnouts, a

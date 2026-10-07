@@ -35,7 +35,8 @@ export function mixPose(a: Pose, b: Pose, f: number, out: Pose = { w: V3(0, 0, 0
   out.curl = a.curl.map((c, j) => lerp(c, b.curl[j], f));
   out.thumb = lerp(a.thumb, b.thumb, f);
   out.spread = lerp(a.spread ?? 0, b.spread ?? 0, f);
-  out.tip = f < 0.5 ? a.tip ?? b.tip : b.tip ?? a.tip;
+  // both poses pin a fingertip: glide the target (switching it at f=0.5 teleports the hand, the IK obeys it fully)
+  out.tip = a.tip && b.tip ? a.tip.clone().lerp(b.tip, f) : a.tip ?? b.tip;
   out.tipW = lerp(a.tip ? a.tipW ?? 0 : 0, b.tip ? b.tipW ?? 0 : 0, f);
   out.pole = a.pole && b.pole ? a.pole.clone().lerp(b.pole, f).normalize() : f < 0.5 ? a.pole ?? b.pole : b.pole ?? a.pole;
   return out;

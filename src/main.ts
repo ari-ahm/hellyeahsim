@@ -834,7 +834,6 @@ function frame() {
   u.rain.value = storm;
   u.flash.value = S.flash;
   u.kill.value = storm * 0.8;
-  u.chug.value = damp(u.chug.value, cab.chug, 10, dt || 0.016);
   fx.update(dt, S.s, S.time, uHell, cab.root.position);
   scene.fog!.color.setRGB(lerp(0.23, 0.4, uHell), lerp(0.05, 0.03, uHell), lerp(0.2, 0.01, uHell));
   bloom.strength = 0.6 + uHell * 0.5;
