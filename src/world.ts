@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import * as Art from './art';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { toon, glow, rand, pick, V3 } from './util';
 
 export const CHUNK = 80;
@@ -34,7 +35,9 @@ void main(){
   // VICE: pastel peach-to-teal sunset, the 80s never ended
   vec3 vtop = vec3(0.05,0.08,0.3), vmid = vec3(0.95,0.35,0.55), vhor = vec3(1.0,0.75,0.45);
   vec3 vcol = h > 0.0 ? mix(vhor, mix(vmid, vtop, smoothstep(0.1,0.6,h)), smoothstep(0.0,0.18,h)) : vec3(0.1,0.55,0.6) * (0.6 + 0.4*smoothstep(-0.1,0.0,h));
-  if (sd < R) vcol = mix(vcol, vec3(1.0,0.9,0.5)*1.3, smoothstep(R, R-0.004, sd));
+  // kept under the bloom threshold: at 1.3 it bloomed into a white blob the size of the windshield
+  vec3 vsun = mix(vec3(1.0,0.9,0.62), vec3(1.0,0.5,0.62), smoothstep(0.6,-0.9,(d.y - sunDir.y) / R)) * 0.9;
+  vcol = mix(vcol, vsun, smoothstep(R, R-0.004, sd)) + vec3(1.0,0.6,0.5) * exp(-sd*6.0) * 0.12;
   col = mix(col, vcol, vice);
   // STORM: bruised clouds and lightning that lights them from inside
   float cl = 0.0; vec2 cp = d.xz / max(d.y + 0.25, 0.05) * 1.6 + vec2(time*0.04, 0.0);
@@ -227,6 +230,7 @@ export class World {
         g.add(L);
       }
     }
+    const palms: THREE.BufferGeometry[] = [];
     for (let k = 0; k < 7; k++) {
       const s = rand(s0, s1);
       const side = Math.random() < 0.5 ? -1 : 1;
@@ -235,7 +239,8 @@ export class World {
         const palm = this.makePalm();
         this.placeAt(palm, s, side * rand(12, 60));
         palm.rotation.y = rand(0, 6);
-        g.add(palm);
+        palm.updateMatrixWorld(true);
+        palm.traverse((o) => { if (o instanceof THREE.Mesh) palms.push(o.geometry.clone().applyMatrix4(o.matrixWorld)); });
       } else if (Math.random() < 0.6) {
         const cac = new THREE.Group();
         const hh = rand(2.5, 6);
@@ -266,6 +271,13 @@ export class World {
         rock.rotation.set(rand(0, 3), rand(0, 3), rand(0, 3));
         g.add(rock);
       }
+    }
+    // a palm is 16 meshes; 50 of them on screen doubled the draw calls. bake the chunk's grove into one.
+    if (palms.length) {
+      const grove = new THREE.Mesh(mergeGeometries(palms), this.palmMat);
+      grove.userData.owned = true;
+      palms.forEach((p) => p.dispose());
+      g.add(grove);
     }
     if (Math.random() < 0.45 && i > 1) {
       const b = new THREE.Group();
@@ -301,15 +313,25 @@ export class World {
     this.chunks.set(i, g);
   }
 
-  private palmMat = { trunk: new THREE.MeshStandardMaterial({ color: 0x7a5236, roughness: 0.9 }), leaf: new THREE.MeshStandardMaterial({ color: 0x1f8a4c, roughness: 0.7, side: THREE.DoubleSide }) };
-  private palmGeo = { seg: new THREE.CylinderGeometry(0.22, 0.3, 1.6, 7), leaf: (() => { const g = new THREE.ConeGeometry(0.55, 4.2, 4, 1); g.scale(1, 1, 0.12); g.translate(0, 2.1, 0); return g; })() };
+  private palmMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, side: THREE.DoubleSide });
+  private palmGeo = (() => {
+    const tint = (g: THREE.BufferGeometry, hex: number) => {
+      const c = new THREE.Color(hex), n = g.attributes.position.count;
+      g.setAttribute('color', new THREE.Float32BufferAttribute(Array.from({ length: n * 3 }, (_, i) => c.toArray()[i % 3]), 3));
+      return g;
+    };
+    const leaf = new THREE.ConeGeometry(0.55, 4.2, 4, 1);
+    leaf.scale(1, 1, 0.12);
+    leaf.translate(0, 2.1, 0);
+    return { seg: tint(new THREE.CylinderGeometry(0.22, 0.3, 1.6, 7), 0x7a5236), leaf: tint(leaf, 0x1f8a4c) };
+  })();
   private makePalm() {
     const p = new THREE.Group();
     const h = rand(7, 12), lean = rand(0.04, 0.12);
     let y = 0, x = 0;
     const n = Math.ceil(h / 1.5);
     for (let i = 0; i < n; i++) {
-      const seg = new THREE.Mesh(this.palmGeo.seg, this.palmMat.trunk);
+      const seg = new THREE.Mesh(this.palmGeo.seg);
       seg.position.set(x, y + 0.75, 0);
       seg.rotation.z = -lean * (i + 1) * 0.6;
       p.add(seg);
@@ -317,7 +339,7 @@ export class World {
       x += lean * (i + 1) * 0.9;
     }
     for (let i = 0; i < 8; i++) {
-      const lf = new THREE.Mesh(this.palmGeo.leaf, this.palmMat.leaf);
+      const lf = new THREE.Mesh(this.palmGeo.leaf);
       lf.position.set(x, y, 0);
       lf.rotation.set(0, (i / 8) * Math.PI * 2, 1.25 + rand(-0.2, 0.25));
       lf.rotation.order = 'YZX';
@@ -348,7 +370,7 @@ export class World {
       if (i < ci - 1 || i > ci + 9) {
         this.group.remove(g);
         g.traverse((o) => {
-          if (o instanceof THREE.Mesh && (o.geometry.attributes.uv?.count ?? 0) === 34) o.geometry.dispose();
+          if (o instanceof THREE.Mesh && (o.userData.owned || (o.geometry.attributes.uv?.count ?? 0) === 34)) o.geometry.dispose();
         });
         this.chunks.delete(i);
       }

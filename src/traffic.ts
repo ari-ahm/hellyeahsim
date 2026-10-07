@@ -59,7 +59,7 @@ function makeCar(kind: string) {
     const win = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.9, 0.1), glass);
     win.position.set(0, 2.2, -5.3);
     const sideMat = toon(0xffffff, { map: pick(truckCache) });
-    const box = new THREE.Mesh(new THREE.BoxGeometry(2.6, 3.2, 8), [sideMat, sideMat, paint, paint, toon(0xdddddd), toon(0xdddddd)]);
+    const box = new THREE.Mesh(new THREE.BoxGeometry(2.6, 3.2, 8), [sideMat, sideMat, paint, paint, toon(0x8c8c8c), toon(0x8c8c8c)]);
     box.position.set(0, 2.2, 1.3);
     g.add(cab, win, box);
     for (const z of [-4, 0, 3.5]) for (const x of [-1.15, 1.15]) {

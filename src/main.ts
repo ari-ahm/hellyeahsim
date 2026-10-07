@@ -536,6 +536,14 @@ function simulate(dt: number) {
   // ---- traffic & collisions
   traffic.spawn(S.s, auto ? 0.6 : 1 + S.dist / 8000);
   traffic.update(dt, S.s, S.time);
+  // auto-dipping high beams: a white truck tail 8 m out was catching ~30x the light the road does and nuking the bloom
+  let beamD = 120;
+  for (const c of traffic.vehicles) {
+    const d = c.s - c.len / 2 - S.s - 3.4;
+    if (d > 0 && Math.abs(c.lane - S.lat) < 4 + d * 0.15) beamD = Math.min(beamD, d);
+  }
+  const beam = 160 * clamp((beamD / 60) ** 1.1, 0.05, 1);
+  for (const hl of cab.headlights) hl.intensity = damp(hl.intensity, beam, 10, dt || 0.016);
   const pS = S.s + 0.8;
   const pPos = new THREE.Vector3(S.x, 0, -S.s);
   for (let i = traffic.vehicles.length - 1; i >= 0; i--) {
@@ -897,6 +905,7 @@ cab.root.add(dbgCam);
   steer(x: number | null) { dbgSteer = x; },
   gfx(n: number) { gfx = n; applyMode(); },
   cough: (n: number) => coughFit(n),
+  world, traffic, renderer,
 };
 
 // ---------------------------------------------------------------- forging the forearm
