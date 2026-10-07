@@ -428,7 +428,6 @@ export class AudioSys {
   setMuted(m: boolean) {
     this.muted = m;
     if (this.ctx) this.out.gain.setTargetAtTime(m ? 0 : 1, this.ctx.currentTime, 0.05);
-    if (m) speechSynthesis?.cancel();
   }
 
   nextStation() {
