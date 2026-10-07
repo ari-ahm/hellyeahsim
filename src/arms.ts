@@ -175,18 +175,26 @@ export class Arm {
     return this.bones[2];
   }
 
-  /** wrist position + hand orientation in parent (car) space */
-  solve(wrist: THREE.Vector3, hq: THREE.Quaternion) {
-    const S = this.root.position;
-    const T = wrist.clone().sub(S);
+  /** where the elbow lands (relative to the shoulder) for a wrist target and pole direction */
+  private elbowLocal(wrist: THREE.Vector3, pole: THREE.Vector3) {
+    const T = wrist.clone().sub(this.root.position);
     let d = T.length();
-    const dir = T.clone().normalize();
+    const dir = T.normalize();
     d = clamp(d, Math.abs(this.a - this.b) + 0.03, this.a + this.b - 0.004);
     const x = (this.a * this.a - this.b * this.b + d * d) / (2 * d);
     const h = Math.sqrt(Math.max(0, this.a * this.a - x * x));
-    const p = this.pole.clone().addScaledVector(dir, -this.pole.dot(dir)).normalize();
-    const E = dir.clone().multiplyScalar(x).addScaledVector(p, h);
-    const W = dir.clone().multiplyScalar(d);
+    const p = pole.clone().addScaledVector(dir, -pole.dot(dir)).normalize();
+    return { E: dir.clone().multiplyScalar(x).addScaledVector(p, h), W: dir.multiplyScalar(d) };
+  }
+
+  /** elbow position in parent (car) space */
+  elbowAt(wrist: THREE.Vector3, pole = this.pole) {
+    return this.elbowLocal(wrist, pole).E.add(this.root.position);
+  }
+
+  /** wrist position + hand orientation in parent (car) space */
+  solve(wrist: THREE.Vector3, hq: THREE.Quaternion) {
+    const { E, W } = this.elbowLocal(wrist, this.pole);
     const dSE = E.clone().normalize();
     const dEW = W.clone().sub(E).normalize();
     let n = new THREE.Vector3().crossVectors(dSE, dEW);

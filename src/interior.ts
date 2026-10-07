@@ -5,9 +5,9 @@ import type { ArmData } from './armgen';
 import * as Art from './art';
 import { makeCan, type Can } from './can';
 import { toon, pbr, glow, clamp, smooth, lerp, rand, V3, basisQ, rotX, rotY, rotZ, qmul, beam, damp } from './util';
+import { type Pose, C4, fwdUp, mixPose, frameOf, HandRest, RIM_R, type Frame } from './grip';
 
-type Pose = { w: THREE.Vector3; q: THREE.Quaternion; curl: number[]; thumb: number; spread?: number; tip?: THREE.Vector3; tipW?: number };
-type Key = { t: number; pose: Pose | null }; // null => default (L: on the wheel, R: THE DRAPE)
+type Key = { t: number; pose: Pose | null }; // null => wherever that hand is resting right now
 type Ev = { t: number; fn: () => void; done?: boolean };
 interface Action {
   name: string;
@@ -43,7 +43,6 @@ const Q_FLAT = new THREE.Quaternion();
 
 const CAN_LOCAL = V3(0, -0.06, -0.078);
 const CIG_FILTER_LOCAL = V3(-0.02, -0.05, -0.113);
-const GRIP_LOCAL = V3(0, -0.06, -0.13);
 const TIP_LOCAL_L = V3(0.04, -0.035, -0.18);
 const CAN_ROT = rotZ(Math.PI / 2);
 /** hand orientation that holds a can with its top pointing along `up` */
@@ -54,7 +53,6 @@ function canHandQ(up: THREE.Vector3, back: THREE.Vector3) {
 }
 const MOUTH = V3(0.035, 1.03, -0.08);
 
-const C4 = (x: number) => [x, x, x, x];
 const wristFor = (point: THREE.Vector3, q: THREE.Quaternion, local: THREE.Vector3) => point.clone().sub(local.clone().applyQuaternion(q));
 const P = (point: THREE.Vector3, q: THREE.Quaternion, local: THREE.Vector3, curl: number[] | number, thumb = 0.8, spread = 0): Pose => ({
   w: wristFor(point, q, local), q, curl: typeof curl === 'number' ? C4(curl) : curl, thumb, spread,
@@ -62,12 +60,41 @@ const P = (point: THREE.Vector3, q: THREE.Quaternion, local: THREE.Vector3, curl
 const W = (w: THREE.Vector3, q: THREE.Quaternion, curl: number[] | number, thumb = 0.8, spread = 0): Pose => ({
   w, q, curl: typeof curl === 'number' ? C4(curl) : curl, thumb, spread,
 });
-function fwdUp(fwd: THREE.Vector3, up: THREE.Vector3) {
-  const z = fwd.clone().normalize().negate();
-  const x = new THREE.Vector3().crossVectors(up, z).normalize();
-  const y = new THREE.Vector3().crossVectors(z, x);
-  return basisQ(x, y, z);
-}
+
+// ---- cabin layout (car-local). the driver's eye is at (0, 1.19, 0).
+const CX = 0.3; // the car's centerline: the driver sits left of it
+const DOOR_L = -0.52; // inner face of the driver's door
+const SILL_Y = 0.86; // top of the door, where the left elbow lives
+const SPOKE_DROOP = 0.1;
+const SHOULDER_L = V3(-0.25, 0.9, -0.1);
+const SHOULDER_R = V3(0.22, 0.87, -0.04);
+const POLE_L = V3(-1, -0.8, 0.3).normalize();
+const POLE_R = V3(1, -1, 0.35).normalize();
+
+// ---- resting styles
+// R: 'top' = palm on top of the rim, fingers over the far side (or flat if feeling fancy). steering is a bus knob:
+//      the palm never leaves its spot; fingers close into a fist to turn, and past what a wrist can roll they open
+//      flat and it's pure palm friction. 'horn' = palm on the hub's upper curve, knuckles up, fingers lying forward over it.
+// L: 'door' / 'air' while the right hand drives; 'graze' when it's busy ('top' if you commit to a hard turn).
+type RStyle = 'top' | 'horn';
+type LStyle = 'door' | 'air' | 'graze' | 'top';
+const L_ON_WHEEL: LStyle[] = ['graze', 'top'];
+const R_TOP = Math.PI / 2 - 0.33; // contact ~12:40, just right of center
+const L_TOP = Math.PI / 2 + 0.42; // ~11:10
+const L_GRAZE = 2.55;
+const KNOB_MAX = Math.PI / 2; // fingers never point more than 90° away from up
+/** rim center relative to the wrist (hand frame) */
+const PALM_DRAPE = V3(0, -0.05, -0.07);
+const PALM_FIST = V3(0, -0.046, -0.09);
+const PALM_FLAT = V3(0, -0.04, -0.072);
+const CURL_DANGLE = [0.78, 0.9, 0.98, 1.08];
+const CURL_FANCY = [0.2, 0.17, 0.23, 0.3];
+const CURL_FIST = [1.12, 1.18, 1.22, 1.28];
+const POWER: Record<string, number> = { top: 1, horn: 0.9, door: 0, air: 0, graze: 0.5, 'L-top': 0.85 };
+/** elbow parked on the door top */
+const ELBOW_SILL = V3(-0.56, 0.95, -0.22);
+const POLE_SILL = ELBOW_SILL.clone().sub(SHOULDER_L).normalize();
+const POLE_GRAZE = V3(-0.55, 0.95, -0.3).sub(SHOULDER_L).normalize();
 
 interface Particle {
   s: THREE.Sprite;
@@ -86,8 +113,11 @@ export class Interior {
   mirrorCam: THREE.PerspectiveCamera;
   mirrorRT: THREE.WebGLRenderTarget;
   wheelSpin = new THREE.Group();
-  gripL = new THREE.Object3D();
-  drapeR = new THREE.Object3D();
+  tilt = new THREE.Group();
+  /** pitch/roll-free frame glued to the road under the car (for things that must stay on the asphalt) */
+  ground = new THREE.Group();
+  pedals: THREE.Group[] = [];
+  headlights: THREE.SpotLight[] = [];
   armL: Arm | null = null;
   armR: Arm | null = null;
   action: Action | null = null;
@@ -105,12 +135,24 @@ export class Interior {
   look = { x: 0, y: 0 };
   winHeld = false;
   handsOn = { L: true, R: true };
+  /** how much steering authority the hands currently have (0 = jesus, 1 = a firm forearm) */
+  steerPower = 1;
+  restR = new HandRest<RStyle>('top');
+  restL = new HandRest<LStyle>('door');
+  private rIdle: RStyle = 'top';
+  private lIdle: LStyle = 'door';
+  private rIdleT = rand(8, 16);
+  private lIdleT = rand(10, 20);
+  private holdT = 0;
+  private hard = 0;
+  private grip = 0;
+  /** debug: force resting styles */
+  force: { R?: RStyle; L?: LStyle } = {};
 
   can: THREE.Group;
   canTab: THREE.Group;
   canObj: Can;
   chug = 0;
-  graze = 0;
   cig: THREE.Group;
   ember: THREE.Mesh;
   flame: THREE.Sprite;
@@ -145,7 +187,7 @@ export class Interior {
     this.mirrorRT = new THREE.WebGLRenderTarget(256, 80, { type: THREE.HalfFloatType });
     this.mirrorRT.texture.magFilter = THREE.NearestFilter;
     this.mirrorCam = new THREE.PerspectiveCamera(26, 512 / 160, 1.0, 900);
-    this.mirrorCam.position.set(0, 1.45, -0.4);
+    this.mirrorCam.position.set(CX, 1.45, -0.4);
     this.mirrorCam.rotation.y = Math.PI;
     r.add(this.mirrorCam);
 
@@ -160,21 +202,22 @@ export class Interior {
     const paint = pbr(0x8a0016, 0.45, 0.2, { clearcoat: 0.6, clearcoatRoughness: 0.35 });
     const carbon = pbr(0x16161c, 0.55, 0.3, { clearcoat: 0.3, clearcoatRoughness: 0.6, bumpMap: grain, bumpScale: 0.2 });
 
-    // --- Dashboard
-    const dashBody = new THREE.Mesh(new RoundedBoxGeometry(2.0, 0.34, 0.6, 4, 0.07), dark);
-    dashBody.position.set(0, 0.74, -0.98);
+    // --- Dashboard. The driver sits left of the car's centerline (CX), like in a real car:
+    // the door is close enough to lean on and the A-pillar hangs in the corner of your eye.
+    const dashBody = new THREE.Mesh(new RoundedBoxGeometry(1.84, 0.34, 0.6, 4, 0.07), dark);
+    dashBody.position.set(CX, 0.74, -0.98);
     r.add(dashBody);
-    const dashTop = new THREE.Mesh(new RoundedBoxGeometry(2.0, 0.08, 0.5, 4, 0.035), dark);
-    dashTop.position.set(0, 0.9, -0.95);
+    const dashTop = new THREE.Mesh(new RoundedBoxGeometry(1.84, 0.08, 0.5, 4, 0.035), dark);
+    dashTop.position.set(CX, 0.9, -0.95);
     dashTop.rotation.x = 0.12;
     r.add(dashTop);
     const binnacle = new THREE.Mesh(new RoundedBoxGeometry(0.62, 0.13, 0.28, 4, 0.06), carbon);
     binnacle.position.set(0, 0.93, -0.83);
     r.add(binnacle);
-    const strip = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.004, 0.004), glow(0.05, 0.6, 0.8));
-    strip.position.set(0, 0.86, -0.68);
+    const strip = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.004, 0.004), glow(0.05, 0.6, 0.8));
+    strip.position.set(CX, 0.86, -0.68);
     r.add(strip);
-    for (const vx of [-0.62, 0.62, -0.2, 0.2]) {
+    for (const vx of [-0.38, 0.2, 0.52, 1.0]) {
       const vent = new THREE.Group();
       vent.add(new THREE.Mesh(new RoundedBoxGeometry(0.16, 0.07, 0.03, 2, 0.012), chrome));
       for (let i = 0; i < 4; i++) {
@@ -183,10 +226,15 @@ export class Interior {
         slat.rotation.x = -0.4;
         vent.add(slat);
       }
-      vent.position.set(vx, Math.abs(vx) < 0.3 ? 0.72 : 0.8, -0.685);
+      vent.position.set(vx, vx > 0 && vx < 0.6 ? 0.72 : 0.8, -0.685);
       vent.rotation.x = -0.25;
       r.add(vent);
     }
+    // knee bolster under the dash so the footwell reads as a footwell, not a void
+    const bolster = new THREE.Mesh(new RoundedBoxGeometry(1.84, 0.14, 0.12, 3, 0.04), darker);
+    bolster.position.set(CX, 0.55, -0.72);
+    bolster.rotation.x = 0.35;
+    r.add(bolster);
 
     const { c: dc } = Art.canvas(512, 256);
     const dashTex = new THREE.CanvasTexture(dc.canvas);
@@ -211,23 +259,39 @@ export class Interior {
     r.add(radioScreen);
 
     // --- Pillars, roof, doors
+    const carpet = pbr(0x120c16, 0.95, 0, { bumpMap: grain, bumpScale: 1.5 });
     for (const s of [-1, 1]) {
-      r.add(beam(V3(s * 0.9, 0.9, -1.05), V3(s * 0.77, 1.62, -0.32), 0.04, 0.07, trim));
-      const door = new THREE.Mesh(new RoundedBoxGeometry(0.12, 0.5, 1.6, 3, 0.04), dark);
-      door.position.set(s * 0.92, 0.72, -0.2);
+      const inner = s < 0 ? DOOR_L : CX + (CX - DOOR_L); // inner face of the door
+      const dx = inner + s * 0.08;
+      r.add(beam(V3(inner + s * 0.1, 0.88, -1.05), V3(inner + s * 0.03, 1.62, -0.32), 0.045, 0.075, trim)); // A-pillar
+      r.add(beam(V3(inner + s * 0.08, SILL_Y, 0.55), V3(inner + s * 0.05, 1.62, 0.5), 0.05, 0.12, trim)); // B-pillar
+      const door = new THREE.Mesh(new RoundedBoxGeometry(0.16, SILL_Y - 0.28, 1.75, 3, 0.04), dark);
+      door.position.set(dx, (SILL_Y + 0.28) / 2 - 0.02, -0.25);
       r.add(door);
-      const sill = new THREE.Mesh(new RoundedBoxGeometry(0.14, 0.06, 1.5, 3, 0.02), trim);
-      sill.position.set(s * 0.88, 0.99, -0.2);
+      // the door top: padded, wide, a forearm's natural habitat
+      const sill = new THREE.Mesh(new RoundedBoxGeometry(0.17, 0.05, 1.65, 3, 0.022), trim);
+      sill.position.set(dx, SILL_Y - 0.025, -0.25);
       r.add(sill);
       const amb = new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.005, 1.4), glow(3, 0.2, 2.4));
-      amb.position.set(s * 0.84, 0.95, -0.2);
+      amb.position.set(inner + s * 0.003, SILL_Y - 0.07, -0.25);
       r.add(amb);
+      // armrest ledge + pull handle + chrome latch + speaker
+      const rest = new THREE.Mesh(new RoundedBoxGeometry(0.07, 0.04, 0.5, 2, 0.015), darker);
+      rest.position.set(inner - s * 0.025, 0.66, -0.1);
+      r.add(rest);
+      const handle = new THREE.Mesh(new RoundedBoxGeometry(0.02, 0.025, 0.12, 2, 0.008), chrome);
+      handle.position.set(inner - s * 0.01, 0.76, -0.5);
+      r.add(handle);
+      const spk = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.01, 24), pbr(0x07060a, 0.9, 0, { bumpMap: grain, bumpScale: 3 }));
+      spk.rotation.z = Math.PI / 2;
+      spk.position.set(inner - s * 0.004, 0.45, -0.72);
+      r.add(spk);
     }
-    const roof = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.05, 1.2), pbr(0x2a2030, 0.9));
-    roof.position.set(0, 1.64, 0.25);
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.05, 1.2), pbr(0x2a2030, 0.9));
+    roof.position.set(CX, 1.64, 0.25);
     r.add(roof);
-    const header = new THREE.Mesh(new RoundedBoxGeometry(1.6, 0.08, 0.14, 2, 0.03), darker);
-    header.position.set(0, 1.6, -0.33);
+    const header = new THREE.Mesh(new RoundedBoxGeometry(1.7, 0.08, 0.14, 2, 0.03), darker);
+    header.position.set(CX, 1.6, -0.33);
     r.add(header);
     const visor = new THREE.Mesh(new RoundedBoxGeometry(0.42, 0.02, 0.17, 2, 0.008), pbr(0x3a2d42, 0.9));
     visor.position.set(0.42, 1.565, -0.3);
@@ -238,17 +302,93 @@ export class Interior {
     pol.rotation.set(Math.PI / 2 + 0.35, Math.PI, Math.PI + 0.12);
     r.add(pol);
 
+    // --- Floor, footwell, console, seats, legs: the car has a bottom now. the road stays outside.
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.04, 2.2), carpet);
+    floor.position.set(CX, 0.27, -0.35);
+    r.add(floor);
+    const firewall = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.5, 0.04), carpet);
+    firewall.position.set(CX, 0.5, -1.27);
+    firewall.rotation.x = -0.5;
+    r.add(firewall);
+    const tunnel = new THREE.Mesh(new RoundedBoxGeometry(0.3, 0.3, 1.25, 3, 0.05), dark);
+    tunnel.position.set(CX, 0.4, -0.55);
+    r.add(tunnel);
+    const consoleTop = new THREE.Mesh(new RoundedBoxGeometry(0.28, 0.05, 0.55, 3, 0.02), trim);
+    consoleTop.position.set(CX, 0.555, -0.2);
+    r.add(consoleTop);
+    // cupholder (the beer comes from here)
+    const cupRing = new THREE.Mesh(new THREE.TorusGeometry(0.039, 0.007, 8, 28), chrome);
+    cupRing.rotation.x = Math.PI / 2;
+    cupRing.position.set(0.3, 0.582, -0.33);
+    r.add(cupRing);
+    const cupHole = new THREE.Mesh(new THREE.CircleGeometry(0.036, 24), pbr(0x020103, 1));
+    cupHole.rotation.x = -Math.PI / 2;
+    cupHole.position.set(0.3, 0.581, -0.33);
+    r.add(cupHole);
+    // shifter: chrome stick, gold skull knob
+    r.add(beam(V3(CX + 0.02, 0.55, -0.62), V3(CX + 0.05, 0.72, -0.58), 0.014, 0.014, chrome));
+    const knob = new THREE.Mesh(new THREE.SphereGeometry(0.028, 16, 12), pbr(0xffc12e, 0.2, 1));
+    knob.scale.set(1, 0.9, 1.15);
+    knob.position.set(CX + 0.05, 0.735, -0.58);
+    r.add(knob);
+    const boot = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.08, 12), pbr(0x0e0b12, 0.9, 0, { bumpMap: leatherBump, bumpScale: 2 }));
+    boot.position.set(CX + 0.02, 0.585, -0.62);
+    r.add(boot);
+    // seats
+    const seatMat = pbr(0x2a1520, 0.7, 0, { bumpMap: leatherBump, bumpScale: 1.5, sheen: 0.5, sheenColor: new THREE.Color(0x663344) });
+    for (const sx of [0, CX * 2 + 0.05]) {
+      const cushion = new THREE.Mesh(new RoundedBoxGeometry(0.5, 0.14, 0.5, 3, 0.05), seatMat);
+      cushion.position.set(sx, 0.47, 0.22);
+      cushion.rotation.x = 0.12;
+      r.add(cushion);
+      const back = new THREE.Mesh(new RoundedBoxGeometry(0.5, 0.7, 0.14, 3, 0.06), seatMat);
+      back.position.set(sx, 0.85, 0.52);
+      back.rotation.x = -0.18;
+      r.add(back);
+    }
+    // the legs. dark denim, never skipped
+    const denim = pbr(0x1c2238, 0.85, 0, { bumpMap: grain, bumpScale: 1.2 });
+    const boots = pbr(0x140c08, 0.4, 0, { clearcoat: 0.6 });
+    const limb = (a: THREE.Vector3, b: THREE.Vector3, rad: number, mat: THREE.Material) => {
+      const m = new THREE.Mesh(new THREE.CapsuleGeometry(rad, a.distanceTo(b), 4, 12), mat);
+      m.position.copy(a).add(b).multiplyScalar(0.5);
+      m.quaternion.setFromUnitVectors(V3(0, 1, 0), b.clone().sub(a).normalize());
+      r.add(m);
+    };
+    for (const lx of [-0.13, 0.13]) {
+      const hip = V3(lx, 0.58, 0.18), knee = V3(lx * 1.15 + 0.02, 0.64, -0.36), ankle = V3(lx * 0.9 + 0.06, 0.36, -0.8);
+      limb(hip, knee, 0.085, denim);
+      limb(knee, ankle, 0.06, denim);
+      const boot2 = new THREE.Mesh(new RoundedBoxGeometry(0.1, 0.09, 0.26, 2, 0.035), boots);
+      boot2.position.copy(ankle).add(V3(0, -0.03, -0.09));
+      boot2.rotation.x = -0.45;
+      r.add(boot2);
+    }
+    // pedals (they move)
+    for (const [px, w] of [[0.02, 0.09], [0.2, 0.05]] as const) {
+      const ped = new THREE.Group();
+      ped.position.set(px, 0.5, -1.05);
+      const arm = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.2, 0.015), chrome);
+      arm.position.set(0, -0.1, 0);
+      const pad = new THREE.Mesh(new RoundedBoxGeometry(w, 0.07, 0.014, 2, 0.005), chrome);
+      pad.position.set(0, -0.2, 0.01);
+      ped.add(arm, pad);
+      ped.rotation.x = 0.35;
+      r.add(ped);
+      this.pedals.push(ped);
+    }
+
     // --- Windshield
     const { c: cc } = Art.canvas(1024, 512);
     const crackTex = new THREE.CanvasTexture(cc.canvas);
     crackTex.colorSpace = THREE.SRGBColorSpace;
     this.crack = { c: cc, tex: crackTex };
-    const glass = new THREE.Mesh(new THREE.PlaneGeometry(1.62, 0.98), new THREE.MeshBasicMaterial({ map: crackTex, transparent: true, depthWrite: false }));
-    glass.position.set(0, 1.27, -0.69);
+    const glass = new THREE.Mesh(new THREE.PlaneGeometry(1.66, 0.98), new THREE.MeshBasicMaterial({ map: crackTex, transparent: true, depthWrite: false }));
+    glass.position.set(CX, 1.27, -0.69);
     glass.rotation.x = 0.77;
     r.add(glass);
     const tint = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.62, 0.98),
+      new THREE.PlaneGeometry(1.66, 0.98),
       new THREE.MeshPhysicalMaterial({ color: 0x302040, roughness: 0.02, transparent: true, opacity: 0.1, depthWrite: false }),
     );
     tint.position.copy(glass.position);
@@ -297,20 +437,20 @@ export class Interior {
     const hood = new THREE.Mesh(new RoundedBoxGeometry(1.75, 0.18, 2.3, 4, 0.08), [
       paint, paint, pbr(0xffffff, 0.45, 0.2, { map: Art.hoodTex(), clearcoat: 0.6, clearcoatRoughness: 0.35 }), paint, paint, paint,
     ]);
-    hood.position.set(0, 0.74, -2.3);
+    hood.position.set(CX, 0.74, -2.3);
     hood.rotation.x = 0.035;
     r.add(hood);
     const blower = new THREE.Mesh(new RoundedBoxGeometry(0.42, 0.16, 0.5, 3, 0.03), chrome);
-    blower.position.set(0, 0.84, -1.95);
+    blower.position.set(CX, 0.84, -1.95);
     blower.scale.set(0.85, 0.7, 0.85);
     r.add(blower);
     const scoop = new THREE.Mesh(new RoundedBoxGeometry(0.34, 0.14, 0.24, 3, 0.03), carbon);
-    scoop.position.set(0, 0.93, -2.0);
+    scoop.position.set(CX, 0.93, -2.0);
     scoop.scale.set(0.85, 0.55, 0.85);
     r.add(scoop);
     for (let i = 0; i < 3; i++) {
       const fin = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.1, 0.2), chrome);
-      fin.position.set(-0.085 + i * 0.085, 0.93, -2.1);
+      fin.position.set(CX - 0.085 + i * 0.085, 0.93, -2.1);
       fin.scale.set(1, 0.5, 1);
       r.add(fin);
     }
@@ -328,7 +468,7 @@ export class Interior {
       eye.position.set(s * 0.028, 0.012, -0.08);
       skull.add(eye);
     }
-    skull.position.set(0, 0.92, -3.35);
+    skull.position.set(CX, 0.92, -3.35);
     r.add(skull);
 
     this.headlightGlow = new THREE.Mesh(
@@ -336,57 +476,108 @@ export class Interior {
       new THREE.MeshBasicMaterial({ map: Art.softDot('255,220,170'), transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending, depthWrite: false }),
     );
     this.headlightGlow.rotation.x = -Math.PI / 2;
-    this.headlightGlow.position.set(0, 0.05, -32);
-    r.add(this.headlightGlow);
+    this.headlightGlow.position.set(CX, 0.05, -32);
+    r.add(this.ground);
+    this.ground.add(this.headlightGlow);
+    // real headlights: they light the asphalt, the traffic, and the deer's last moments
+    for (const s of [-1, 1]) {
+      const hl = new THREE.SpotLight(0xffe2b8, 160, 120, 0.4, 0.5, 1.1);
+      hl.position.set(CX + s * 0.62, 0.62, -3.4);
+      hl.target.position.set(CX + s * 1.2, 0, -26);
+      r.add(hl, hl.target);
+      this.headlights.push(hl);
+    }
 
-    // --- Steering wheel
-    const tilt = new THREE.Group();
-    tilt.position.set(0, 0.8, -0.46);
+    // --- Steering wheel: a T. two drooping cross spokes and a stem, all meeting at the horn.
+    const tilt = this.tilt;
+    tilt.position.set(0, 0.82, -0.46);
     tilt.rotation.x = -0.42;
     r.add(tilt);
     tilt.add(this.wheelSpin);
+    const ws = this.wheelSpin;
     const leather = pbr(0x2a1c22, 0.55, 0, { bumpMap: leatherBump, bumpScale: 1.2, sheen: 0.6, sheenColor: new THREE.Color(0x885566), clearcoat: 0.15 });
-    this.wheelSpin.add(new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.024, 20, 96), leather));
-    const stitch = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.0245, 4, 96, Math.PI * 0.5), pbr(0xff2a2a, 0.6, 0, { wireframe: true }));
+    const spokeMat = pbr(0x1c1520, 0.45, 0.35, { clearcoat: 0.5, clearcoatRoughness: 0.3, bumpMap: grain, bumpScale: 0.15 });
+    ws.add(new THREE.Mesh(new THREE.TorusGeometry(RIM_R, 0.024, 20, 112), leather));
+    const stitch = new THREE.Mesh(new THREE.TorusGeometry(RIM_R, 0.0245, 4, 96, Math.PI * 0.5), pbr(0xff2a2a, 0.6, 0, { wireframe: true }));
     stitch.rotation.z = Math.PI * 0.25;
-    this.wheelSpin.add(stitch);
-    for (const a of [Math.PI * 1.17, -Math.PI * 0.17, -Math.PI / 2]) {
-      this.wheelSpin.add(beam(V3(0, 0, 0), V3(Math.cos(a) * 0.18, Math.sin(a) * 0.18, 0), 0.05, 0.02, chrome));
+    ws.add(stitch);
+    // twelve o'clock marker: so you always know how much trouble the wheel is in
+    const mark = new THREE.Mesh(new THREE.TorusGeometry(RIM_R, 0.0252, 10, 6, 0.11), pbr(0xffc400, 0.4, 0.1, { emissive: 0x803000, emissiveIntensity: 0.4 }));
+    mark.rotation.z = Math.PI / 2 - 0.055;
+    ws.add(mark);
+    // thumb rests where the cross spokes meet the rim
+    for (const a of [-SPOKE_DROOP, Math.PI + SPOKE_DROOP]) {
+      const bump = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), leather);
+      bump.scale.set(0.02, 0.036, 0.027);
+      bump.position.set(Math.cos(a) * 0.171, Math.sin(a) * 0.171, 0.002);
+      bump.rotation.z = a;
+      ws.add(bump);
     }
-    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.075, 0.045, 40), leather);
+    const spoke = (angle: number, w0: number, w1: number) => {
+      const sh = new THREE.Shape();
+      sh.moveTo(0.03, -w0);
+      sh.lineTo(0.176, -w1);
+      sh.quadraticCurveTo(0.184, 0, 0.176, w1);
+      sh.lineTo(0.03, w0);
+      sh.lineTo(0.03, -w0);
+      const g = new THREE.ExtrudeGeometry(sh, { depth: 0.012, bevelEnabled: true, bevelThickness: 0.005, bevelSize: 0.005, bevelSegments: 3, curveSegments: 6 });
+      const m = new THREE.Mesh(g, spokeMat);
+      m.position.z = -0.006;
+      m.rotation.z = angle;
+      ws.add(m);
+      return m;
+    };
+    spoke(-SPOKE_DROOP, 0.036, 0.022);
+    spoke(Math.PI + SPOKE_DROOP, 0.036, 0.022);
+    spoke(-Math.PI / 2, 0.03, 0.045);
+    // cross-spoke trim: a chrome inlay and a little button cluster on each side
+    for (const s of [-1, 1]) {
+      const a = s > 0 ? -SPOKE_DROOP : Math.PI + SPOKE_DROOP;
+      const g = new THREE.Group();
+      g.rotation.z = a;
+      g.position.z = 0.0115;
+      ws.add(g);
+      const inlay = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.0035, 0.003), chrome);
+      inlay.position.set(0.128, s > 0 ? 0.021 : -0.021, 0);
+      g.add(inlay);
+      for (let i = 0; i < 4; i++) {
+        const b = new THREE.Mesh(new RoundedBoxGeometry(0.017, 0.013, 0.006, 2, 0.003), darker);
+        b.position.set(0.1 + (i % 2) * 0.022, (i < 2 ? 0.009 : -0.009) * (s > 0 ? 1 : -1), 0.001);
+        g.add(b);
+        const led = new THREE.Mesh(new THREE.BoxGeometry(0.006, 0.0018, 0.002), s > 0 ? glow(0.2, 1.6, 1.8) : glow(2.2, 0.3, 1.4));
+        led.position.copy(b.position).add(V3(0, 0, 0.0035));
+        g.add(led);
+      }
+    }
+    // stem badge
+    const badge = new THREE.Mesh(new RoundedBoxGeometry(0.03, 0.05, 0.004, 2, 0.002), chrome);
+    badge.position.set(0, -0.13, 0.0115);
+    ws.add(badge);
+    // the hub: the horn, where every spoke ends up
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.077, 0.083, 0.05, 48), leather);
     hub.rotation.x = Math.PI / 2;
-    hub.position.z = 0.01;
-    this.wheelSpin.add(hub);
-    const horn = new THREE.Mesh(new THREE.CircleGeometry(0.064, 40), pbr(0xffffff, 0.3, 0.2, { map: Art.hornTex(), clearcoat: 1 }));
-    horn.position.z = 0.0335;
-    this.wheelSpin.add(horn);
+    hub.position.z = 0.012;
+    ws.add(hub);
+    const bezel = new THREE.Mesh(new THREE.TorusGeometry(0.0745, 0.0035, 8, 64), chrome);
+    bezel.position.z = 0.037;
+    ws.add(bezel);
+    const horn = new THREE.Mesh(new THREE.CircleGeometry(0.071, 48), pbr(0xffffff, 0.3, 0.2, { map: Art.hornTex(), clearcoat: 1 }));
+    horn.position.z = 0.0375;
+    ws.add(horn);
+    // column, shroud, stalks
     const column = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 0.4, 16), darker);
     column.rotation.x = Math.PI / 2;
     column.position.z = -0.2;
     tilt.add(column);
-
-    const R = 0.19;
-    const wz = V3(0, 0, 1);
-    {
-      const theta = Math.PI - 0.22;
-      const radial = V3(Math.cos(theta), Math.sin(theta), 0);
-      const tangent = V3(-Math.sin(theta), Math.cos(theta), 0);
-      const x = tangent.clone().negate();
-      const y = wz.clone().multiplyScalar(0.75).addScaledVector(radial, 0.65).normalize();
-      const z = new THREE.Vector3().crossVectors(x, y);
-      this.gripL.position.copy(radial).multiplyScalar(R);
-      this.gripL.quaternion.copy(basisQ(x, y, z));
-      this.wheelSpin.add(this.gripL);
-    }
-    {
-      // THE DRAPE: wrist resting on top of the rim at ~11 o'clock, hand hooked forward over it.
-      // authored in car space, then glued to the wheel so it steers with it
-      r.updateMatrixWorld(true);
-      this.drapeR.position.set(-0.035, 1.03, -0.565);
-      this.drapeR.quaternion.copy(fwdUp(V3(-0.2, -0.72, -0.66), V3(0.05, 0.62, -0.25)));
-      r.add(this.drapeR);
-      r.updateMatrixWorld(true);
-      this.wheelSpin.attach(this.drapeR);
+    const shroud = new THREE.Mesh(new RoundedBoxGeometry(0.15, 0.11, 0.16, 3, 0.035), darker);
+    shroud.position.set(0, -0.015, -0.12);
+    tilt.add(shroud);
+    for (const s of [-1, 1]) {
+      tilt.add(beam(V3(s * 0.07, 0.0, -0.1), V3(s * 0.2, -0.035, -0.075), 0.012, 0.012, darker));
+      const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.009, 0.03, 10), chrome);
+      tip.position.set(s * 0.215, -0.039, -0.072);
+      tip.rotation.z = Math.PI / 2 - s * 0.26;
+      tilt.add(tip);
     }
 
     // --- Beer can
@@ -419,22 +610,22 @@ export class Interior {
     r.add(pack);
 
     // --- mirror, dice, freshener
-    r.add(beam(V3(0, 1.6, -0.4), V3(0, 1.49, -0.45), 0.018, 0.018, darker));
+    r.add(beam(V3(CX, 1.6, -0.4), V3(CX, 1.49, -0.45), 0.018, 0.018, darker));
     const mirrorBack = new THREE.Mesh(new RoundedBoxGeometry(0.3, 0.085, 0.03, 2, 0.012), darker);
-    mirrorBack.position.set(0, 1.47, -0.465);
+    mirrorBack.position.set(CX, 1.47, -0.465);
     mirrorBack.scale.set(0.85, 0.85, 1);
     mirrorBack.rotation.x = -0.12;
     r.add(mirrorBack);
     const mirror = new THREE.Mesh(new THREE.PlaneGeometry(0.28, 0.07), new THREE.MeshBasicMaterial({ map: this.mirrorRT.texture }));
     const uv = mirror.geometry.attributes.uv;
     for (let i = 0; i < uv.count; i++) uv.setX(i, 1 - uv.getX(i));
-    mirror.position.set(0, 1.47, -0.449);
+    mirror.position.set(CX, 1.47, -0.449);
     mirror.scale.set(0.85, 0.85, 1);
     mirror.rotation.x = -0.12;
     r.add(mirror);
 
     const pivot = new THREE.Group();
-    pivot.position.set(0.1, 1.44, -0.465);
+    pivot.position.set(CX + 0.1, 1.44, -0.465);
     r.add(pivot);
     const diceMats = [1, 6, 2, 5, 3, 4].map((n) => pbr(0xffffff, 0.95, 0, { map: Art.diceFace(n), sheen: 1, sheenColor: new THREE.Color(0xff88cc) }));
     for (const [dx, len] of [[-0.02, 0.045], [0.025, 0.06]]) {
@@ -469,7 +660,7 @@ export class Interior {
       bhead.add(beam(V3(s * 0.012, 0.02, 0), V3(s * 0.04, 0.07, 0.01), 0.005, 0.005, pbr(0xe8d8b0, 0.5)));
     }
     bob.add(bhead);
-    bob.position.set(-0.5, 0.97, -0.88);
+    bob.position.set(-0.36, 0.97, -0.88);
     bob.rotation.y = 0.5;
     r.add(bob);
     this.bobble = { head: bhead, a: 0, v: 0, b: 0, vb: 0 };
@@ -507,8 +698,9 @@ export class Interior {
   }
 
   attachArms(data: ArmData) {
-    this.armL = new Arm(data, -1, V3(-0.24, 0.88, 0.0), this.root);
-    this.armR = new Arm(data, 1, V3(0.22, 0.87, -0.04), this.root);
+    this.armL = new Arm(data, -1, SHOULDER_L, this.root);
+    this.armR = new Arm(data, 1, SHOULDER_R, this.root);
+    this.restR.theta = R_TOP;
     this.can.rotation.z = Math.PI / 2;
     this.armR.canAnchor.add(this.can);
     this.armR.cigAnchor.add(this.cig);
@@ -521,6 +713,8 @@ export class Interior {
   private start(a: Omit<Action, 't'>) {
     if (this.action || !this.armR) return false;
     this.action = { ...a, t: 0 };
+    // decide now how the hand comes back to the wheel (applied once it has left)
+    if (a.R) this.rIdle = Math.random() < 0.6 ? 'top' : 'horn';
     return true;
   }
 
@@ -750,7 +944,7 @@ export class Interior {
     const n = this.stickers.length;
     if (n >= 24) return;
     const s = new THREE.Mesh(new THREE.PlaneGeometry(0.04, 0.04), new THREE.MeshStandardMaterial({ map: this.stickerTex, transparent: true, roughness: 0.4 }));
-    s.position.set(-0.78 + (n % 6) * 0.045, 0.9 + Math.floor(n / 6) * 0.045, -0.672);
+    s.position.set(-0.47 + (n % 6) * 0.045, 0.9 + Math.floor(n / 6) * 0.045, -0.672);
     s.rotation.set(-0.25, 0.12, rand(-0.3, 0.3));
     this.root.add(s);
     this.stickers.push(s);
@@ -821,58 +1015,154 @@ export class Interior {
     this.pumpTarget = 0;
   }
 
-  private anchorPose(o: THREE.Object3D, local: THREE.Vector3, out: Pose) {
-    o.updateWorldMatrix(true, false);
-    const m = new THREE.Matrix4().copy(this.root.matrixWorld).invert().multiply(o.matrixWorld);
-    const pos = V3(0, 0, 0), q = new THREE.Quaternion(), s = V3(0, 0, 0);
-    m.decompose(pos, q, s);
-    out.q.copy(q);
-    out.w.copy(wristFor(pos, q, local));
-    return out;
-  }
-
-  private gL: Pose = { w: V3(0, 0, 0), q: new THREE.Quaternion(), curl: C4(0.5), thumb: 0.4 };
-  private gWin: Pose = W(V3(-0.6, 1.06, -0.36), fwdUp(V3(-0.25, -0.75, -0.6), V3(-0.6, 0.55, -0.3)), [0.45, 0.55, 0.65, 0.75], 0.35, 0.2);
-  private gR: Pose = { w: V3(0, 0, 0), q: new THREE.Quaternion(), curl: [0.95, 1.05, 1.1, 1.18], thumb: 0.35 };
-
   private sample(keys: Key[] | undefined, t: number, def: Pose): { pose: Pose; off: boolean } {
     if (!keys) return { pose: def, off: false };
     let i = 0;
     while (i < keys.length - 2 && t > keys[i + 1].t) i++;
     const k0 = keys[i], k1 = keys[i + 1];
     const f = smooth((t - k0.t) / Math.max(1e-4, k1.t - k0.t));
-    const p0 = k0.pose ?? def, p1 = k1.pose ?? def;
+    const fill = (p: Pose | null) => (p ? (p.pole ? p : { ...p, pole: def.pole }) : def);
     const off = !!(k0.pose || k1.pose) && !(f < 0.15 && !k0.pose) && !(f > 0.85 && !k1.pose);
+    return { pose: mixPose(fill(k0.pose), fill(k1.pose), f), off };
+  }
+
+  // ---------------- hands at rest ----------------
+  /**
+   * The bus knob: the palm sits on one spot of the rim (glued to the wheel at local angle h.theta) and never lets go.
+   * Resting, the fingers hang over the far side (or lie flat). Turning, they close into a fist. Once the wheel has
+   * carried the hand past what a wrist can roll, the hand opens flat on the rim and steers by palm friction,
+   * fingers never pointing more than 90° away from up.
+   */
+  private knobPose(h: HandRest<string>, fT: Frame, rot: number, side: number, turning: boolean, dt: number): Pose {
+    if (!turning) h.noFist = false;
+    const thC = h.theta + rot;
+    const psiG = Math.PI / 2 - thC; // where the back of a glued hand would face (clockwise from 12)
+    const psi = clamp(psiG, -KNOB_MAX, KNOB_MAX);
+    const flatK = smooth((Math.abs(psiG) - 1.15) / 0.35);
+    h.fist = damp(h.fist, turning && !h.noFist ? 1 : 0, 9, dt);
+    const fist = h.fist * (1 - flatK);
+    const n = V3(0, 0, 1);
+    const rc = V3(Math.cos(thC), Math.sin(thC), 0);
+    const e = V3(Math.sin(psi), Math.cos(psi), 0);
+    // draped: palm on top of the rim, fingers falling over its far side
+    const B = h.flat ? 1.15 : 0.86; // flat fingers lie forward over the rim instead of pointing at the sky
+    const yD = n.clone().multiplyScalar(Math.cos(B)).addScaledVector(e, Math.sin(B));
+    const fD = e.clone().multiplyScalar(Math.cos(B)).addScaledVector(n, -Math.sin(B));
+    // flat: palm pressed on the face of the rim, fingers lying along the wheel
+    const yF = n.clone().multiplyScalar(0.95).addScaledVector(rc, 0.3).normalize();
+    const fF = e.clone().addScaledVector(yF, -e.dot(yF)).normalize();
+    const yy = yD.lerp(yF, flatK).normalize();
+    const ff = fD.lerp(fF, flatK);
+    ff.addScaledVector(yy, -ff.dot(yy)).normalize();
+    const q = fT.q.clone().multiply(fwdUp(ff, yy));
+    const local = PALM_DRAPE.clone().lerp(PALM_FIST, fist).lerp(PALM_FLAT, flatK);
+    const at = rc.clone().multiplyScalar(RIM_R).applyMatrix4(fT.m);
+    const rest = h.flat ? CURL_FANCY : CURL_DANGLE;
+    const curl = rest.map((c, j) => lerp(lerp(c, CURL_FIST[j], fist), CURL_FANCY[j], flatK));
     return {
-      pose: {
-        w: p0.w.clone().lerp(p1.w, f),
-        q: p0.q.clone().slerp(p1.q, f),
-        curl: p0.curl.map((c, j) => lerp(c, p1.curl[j], f)),
-        thumb: lerp(p0.thumb, p1.thumb, f),
-        spread: lerp(p0.spread ?? 0, p1.spread ?? 0, f),
-        tip: p1.tip ?? p0.tip,
-        tipW: lerp(p0.tipW ?? 0, p1.tipW ?? 0, f),
-      },
-      off,
+      w: at.sub(local.applyQuaternion(q)),
+      q,
+      curl,
+      thumb: lerp(lerp(h.flat ? 0.12 : 0.3, 0.85, fist), 0.1, flatK),
+      spread: lerp(lerp(h.flat ? 0.26 : 0.22, 0.04, fist), 0.3, flatK),
+      pole: side > 0 ? POLE_R : V3(-1, -0.7, 0.35).normalize(),
     };
   }
 
-  update(dt: number, p: { steer: number; v: number; latAcc: number; longAcc: number; time: number; beat: number; hell: number; bump: number; bac: number; heart: number }) {
+  /** palm on the curve between the horn's face and the top of the hub (a touch right), knuckles up, fingers lying forward over the top toward the dash */
+  private hornPose(h: HandRest<string>, fW: Frame, rot: number, s: number, tap: number): Pose {
+    const a = Math.PI / 2 - 0.3 * s;
+    if (Math.abs(rot) > 1.45 && !h.moving) {
+      // past 90°: slide out to the rim and keep going palm-flat, bus-knob style
+      h.go('top', 0.22, 0.02, true);
+      h.theta = a;
+      h.flat = true;
+      h.noFist = true;
+      if (h === this.restR) this.rIdle = 'top';
+    }
+    const e = V3(Math.cos(a), Math.sin(a), 0), n = V3(0, 0, 1);
+    const B = 1.15;
+    const back = n.clone().multiplyScalar(Math.cos(B)).addScaledVector(e, Math.sin(B));
+    const fwd = e.clone().multiplyScalar(Math.cos(B)).addScaledVector(n, -Math.sin(B));
+    const q = fW.q.clone().multiply(fwdUp(fwd, back));
+    const contact = e.clone().multiplyScalar(0.08).addScaledVector(n, 0.026).applyMatrix4(fW.m);
+    const w = contact.sub(V3(0, -0.022, -0.06).applyQuaternion(q));
+    return { w, q, curl: [0.26 - tap * 0.4, 0.22, 0.28, 0.36], thumb: 0.3, spread: 0.2, pole: V3(s, -0.9, 0.15).normalize() };
+  }
+
+  private restPoseR(dt: number, fW: Frame, fT: Frame, rot: number, tap: number, turning: boolean): { pose: Pose; power: number } {
+    const h = this.restR;
+    const pose = h.style === 'horn' ? this.hornPose(h, fW, rot, 1, tap) : this.knobPose(h, fT, rot, 1, turning, dt);
+    if (h.style === 'top' && h.fist < 0.3 && !h.flat) pose.curl[0] -= tap * 0.3;
+    return h.update(dt, pose, POWER[h.style]);
+  }
+
+  private restPoseL(dt: number, fW: Frame, fT: Frame, rot: number, time: number, beat: number, turning: boolean): { pose: Pose; power: number } {
+    const h = this.restL;
+    let pose: Pose;
+    const st = h.style;
+    if (st === 'door') {
+      // elbow parked on the door, hand lazily wrapped over the top edge, one finger keeping time
+      const drum = Math.max(0, Math.sin(beat * Math.PI));
+      const fi = Math.floor(beat) % 4;
+      pose = {
+        w: V3(-0.632, 0.93, -0.515),
+        q: fwdUp(V3(-0.55, -0.22, -0.8), V3(-0.2, 1, -0.05)),
+        curl: [0.95, 1.0, 1.05, 1.12].map((c, j) => c - (j === fi ? drum * 0.35 : 0)),
+        thumb: 0.2,
+        spread: 0.15,
+        pole: POLE_SILL,
+      };
+    } else if (st === 'air') {
+      // elbow still on the door, forearm up, hand loose by the pillar riding the breeze
+      const sw = Math.sin(time * 1.3);
+      pose = {
+        w: V3(-0.585 + sw * 0.01, 1.13, -0.43),
+        q: qmul(new THREE.Quaternion().setFromAxisAngle(V3(0, 0, 1), sw * 0.12), fwdUp(V3(-0.1, 0.32, -0.94), V3(-0.6, 0.8, 0.1))),
+        curl: [0.22, 0.3, 0.38, 0.46],
+        thumb: 0.15,
+        spread: 0.45,
+        pole: POLE_SILL,
+      };
+    } else if (st === 'graze') {
+      // the lightest possible steering input: elbow still on the door, fingertips just touching the rim
+      const a = L_GRAZE + Math.sin(time * 0.6) * 0.04;
+      const tip = V3(Math.cos(a) * RIM_R, Math.sin(a) * RIM_R, 0.024).applyMatrix4(fT.m);
+      const q = fwdUp(V3(0.72, -0.32, -0.62), V3(0.25, 1, 0.1));
+      pose = {
+        w: tip.clone().sub(V3(-0.03, -0.025, -0.18).applyQuaternion(q)),
+        q, curl: [0.32, 0.36, 0.45, 0.55], thumb: 0.15, spread: 0.2, tip, tipW: 1, pole: POLE_GRAZE,
+      };
+    } else pose = this.knobPose(h, fT, rot, -1, turning, dt);
+    return h.update(dt, pose, POWER[st === 'top' ? 'L-top' : st]);
+  }
+
+  /** keep road-level decals flat on the asphalt no matter how the body pitches and rolls */
+  syncGround() {
+    const r = this.root;
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(r.rotation.x, 0, r.rotation.z, 'YXZ')).invert();
+    this.ground.quaternion.copy(q);
+    this.ground.position.set(0, -r.position.y, 0).applyQuaternion(new THREE.Quaternion().setFromEuler(r.rotation).invert());
+  }
+
+  update(dt: number, p: { steer: number; steerIn: number; throttle: number; brake: number; v: number; latAcc: number; longAcc: number; time: number; beat: number; hell: number; bump: number; bac: number; heart: number }) {
     this.steerVis = damp(this.steerVis, p.steer, 10, dt);
     this.wheelSpin.rotation.z = -this.steerVis * 1.9;
     this.root.updateMatrixWorld(true);
     const beatPulse = Math.pow(1 - (p.beat % 1), 3);
+    this.pedals.forEach((pd, i) => (pd.rotation.x = damp(pd.rotation.x, 0.35 - (i === 0 ? p.brake : p.throttle) * 0.35, 14, dt)));
 
     if (this.armL && this.armR) {
-      this.anchorPose(this.gripL, GRIP_LOCAL, this.gL);
-      this.anchorPose(this.drapeR, V3(0, 0, 0), this.gR);
-      const tap = Math.max(0, Math.sin(p.beat * Math.PI)) * 0.25;
-      this.gL.curl = [0.55 - tap * 0.3, 0.6, 0.65, 0.72];
-      this.gL.thumb = 0.35;
-      this.gR.curl = [0.75 - beatPulse * 0.25, 0.85, 0.95, 1.05];
+      const rot = this.wheelSpin.rotation.z;
+      const fW = frameOf(this.wheelSpin, this.root);
+      const fT = frameOf(this.tilt, this.root);
+      // is the player actually steering? fingers close the moment they do; a held turn pulls the left hand in
+      const turning = Math.abs(p.steerIn) > 0.3;
+      this.holdT = Math.abs(p.steerIn) > 0.5 ? this.holdT + dt : 0;
+      this.hard = this.holdT > 0.1 ? 0.7 : Math.max(0, this.hard - dt);
+      const hard = this.hard > 0;
 
       let camAdd = 0;
-      let L = { pose: this.gL, off: false }, Rr = { pose: this.gR, off: false };
       const a = this.action;
       if (a) {
         a.t += dt;
@@ -880,25 +1170,73 @@ export class Interior {
         for (const e of a.events) if (!e.done && t >= e.t) { e.done = true; e.fn(); }
         a.tick?.(t);
         camAdd = a.cam?.(t) ?? 0;
-        Rr = this.sample(a.R, t, this.gR);
       }
-      // left: elbow out the window. only grazes the wheel when the right hand has better things to do
-      this.graze = damp(this.graze, Rr.off ? 1 : 0, 6, dt);
-      const gz = smooth(this.graze);
-      const baseL: Pose = {
-        w: this.gWin.w.clone().lerp(this.gL.w, gz),
-        q: this.gWin.q.clone().slerp(this.gL.q, gz),
-        curl: this.gWin.curl.map((c, j) => lerp(c, this.gL.curl[j], gz)),
-        thumb: lerp(this.gWin.thumb, this.gL.thumb, gz),
-        spread: lerp(0.2, 0, gz),
+
+      // ---- right hand: the main event
+      const hr = this.restR;
+      const rBusy = !!(a && a.R);
+      const settled = !turning && Math.abs(rot) < 0.3; // only rearrange when the wheel is calm
+      const placeR = () => {
+        hr.theta = R_TOP - rot;
+        hr.flat = Math.random() < 0.35;
+        hr.noFist = false;
       };
-      this.armL.pole.set(-1, lerp(0.15, -0.8, gz), lerp(0.55, 0.3, gz)).normalize();
-      L = { pose: baseL, off: gz < 0.7 };
-      if (a) {
-        if (a.L) {
-          const sL = this.sample(a.L, Math.min(a.t, a.dur), baseL);
-          L = { pose: sL.pose, off: sL.off || L.off };
+      if (this.force.R) this.rIdle = this.force.R;
+      if (rBusy) {
+        // the hand is off doing crimes; once it has left, quietly decide where it comes back to
+        if (a!.t > (a!.R![1]?.t ?? 0) && hr.style !== this.rIdle) {
+          hr.snap(this.rIdle);
+          placeR();
         }
+      } else if (hr.style !== this.rIdle && !hr.moving && settled) {
+        hr.go(this.rIdle, 0.55, 0.07);
+        placeR();
+      }
+      this.rIdleT -= dt;
+      if (this.rIdleT <= 0) {
+        this.rIdleT = rand(9, 22);
+        if (!rBusy && settled && !hr.moving && !this.force.R) {
+          if (Math.random() < 0.5) this.rIdle = this.rIdle === 'top' ? 'horn' : 'top';
+          else if (hr.style === 'top') {
+            // re-settle: dangling fingers <-> fancy flat palm
+            hr.go('top', 0.4, 0.03, true);
+            hr.flat = !hr.flat;
+          }
+        }
+      }
+      const tap = Math.max(0, Math.sin(p.beat * Math.PI)) * 0.25;
+      const restR = this.restPoseR(dt, fW, fT, rot, tap, turning);
+      let Rr = { pose: restR.pose, off: false };
+      if (a) Rr = this.sample(a.R, Math.min(a.t, a.dur), restR.pose);
+
+      // ---- left hand: lives on the door. comes to the wheel only when the right hand is busy
+      const hl = this.restL;
+      const rAway = Rr.off;
+      const lOnWheel = L_ON_WHEEL.includes(hl.style);
+      const goL = (st: LStyle, dur: number, lift: number, keep = false, theta = L_TOP) => {
+        hl.go(st, dur, lift, keep);
+        hl.theta = theta - rot;
+        hl.flat = Math.random() < 0.3;
+        hl.noFist = false;
+      };
+      if (this.force.L) {
+        if (hl.style !== this.force.L && !hl.moving) goL(this.force.L, 0.5, 0.06);
+      } else if (rAway) {
+        // a committed turn turns the graze into a real hand on the wheel: the palm lands where the fingertips were
+        if (hard && hl.style === 'graze' && !hl.moving) goL('top', 0.22, 0.02, true, L_GRAZE);
+        else if (!lOnWheel) goL('graze', 0.42, 0.06);
+      } else if (lOnWheel && !hl.moving) hl.go(this.lIdle, 0.7, 0.06);
+      else if (!lOnWheel && hl.style !== this.lIdle && !hl.moving) hl.go(this.lIdle, 0.9, 0.05);
+      this.lIdleT -= dt;
+      if (this.lIdleT <= 0) {
+        const toAir = this.lIdle === 'door' && Math.random() < 0.35;
+        this.lIdle = toAir ? 'air' : 'door';
+        this.lIdleT = toAir ? rand(4, 8) : rand(10, 25);
+      }
+      const restL = this.restPoseL(dt, fW, fT, rot, p.time, p.beat, turning);
+      let L = { pose: restL.pose, off: false };
+      if (a) {
+        if (a.L) L = this.sample(a.L, Math.min(a.t, a.dur), restL.pose);
         if (a.t >= a.dur) {
           this.action = null;
           this.chug = 0;
@@ -909,24 +1247,21 @@ export class Interior {
       if (this.win > 0.01) {
         const wt = p.time;
         const wq = qmul(rotZ(Math.sin(wt * 2.2) * 0.45), qmul(rotY(0.9), Q_FLAT));
-        const wp = W(V3(-0.68, 1.08 + Math.sin(wt * 2.2 + 0.6) * 0.07, -0.38), wq, 0.08, 0.1, 0.6);
-        const f = smooth(this.win);
-        L = {
-          pose: {
-            w: L.pose.w.clone().lerp(wp.w, f),
-            q: L.pose.q.clone().slerp(wp.q, f),
-            curl: L.pose.curl.map((c, j) => lerp(c, wp.curl[j], f)),
-            thumb: lerp(L.pose.thumb, wp.thumb, f),
-            spread: lerp(L.pose.spread ?? 0, 0.6, f),
-          },
-          off: L.off || this.win > 0.3,
-        };
+        const wp: Pose = { ...W(V3(-0.74, 1.08 + Math.sin(wt * 2.2 + 0.6) * 0.07, -0.42), wq, 0.08, 0.1, 0.6), pole: V3(-1, -0.1, 0.4).normalize() };
+        L = { pose: mixPose(L.pose, wp, smooth(this.win)), off: L.off || this.win > 0.3 };
       }
-      this.handsOn = { L: !L.off, R: !Rr.off };
-      for (const [arm, s] of [[this.armL, L], [this.armR, Rr]] as const) {
+
+      const rPow = Rr.off ? 0 : restR.power;
+      const lPow = L.off ? 0 : restL.power;
+      this.steerPower = Math.max(rPow, lPow);
+      this.handsOn = { L: lPow > 0.25, R: rPow > 0.25 };
+      this.grip = Math.max(Rr.off ? 0 : hr.fist, L.off ? 0 : hl.fist);
+
+      for (const [arm, s, pole] of [[this.armL, L, POLE_L], [this.armR, Rr, POLE_R]] as const) {
         arm.curl = s.pose.curl;
         arm.thumb = s.pose.thumb;
         arm.spread = s.pose.spread ?? 0;
+        arm.pole.copy(s.pose.pole ?? pole);
         arm.solve(s.pose.w, s.pose.q);
         // fingertip IK: nudge the wrist until the index tip actually lands on its target
         if (s.pose.tip && (s.pose.tipW ?? 0) > 0.01) {
@@ -943,7 +1278,7 @@ export class Interior {
     }
     const bang = p.hell > 0.5 ? beatPulse * 0.05 : beatPulse * 0.008;
     this.camera.rotation.set(
-      -0.045 + this.camPitch - bang + this.look.y,
+      -0.12 + this.camPitch - bang + this.look.y,
       -this.steerVis * 0.1 + smooth(this.win) * 0.62 + this.look.x,
       -p.latAcc * 0.004 + Math.sin(p.time * 0.7) * p.bac * 0.04 + this.sway,
     );
@@ -956,7 +1291,7 @@ export class Interior {
       this.phone.position.x = -0.3 + Math.sin(p.time * 90) * 0.0015;
       this.phone.rotation.z = Math.sin(p.time * 70) * 0.03;
     }
-    armUniforms.uPump.value = damp(armUniforms.uPump.value, Math.max(this.pumpTarget, p.hell * 0.6), 4, dt);
+    armUniforms.uPump.value = damp(armUniforms.uPump.value, Math.max(this.pumpTarget, p.hell * 0.6, this.grip * 0.45), 4, dt);
     armUniforms.uHell.value = damp(armUniforms.uHell.value, p.hell, 3, dt);
     armUniforms.uTime.value = p.time;
     armUniforms.uHeart.value += dt * (p.heart / 60) * Math.PI * 2;
@@ -1019,7 +1354,7 @@ export class Interior {
       (s.s.material as THREE.SpriteMaterial).opacity = s.op * Math.min(1, k * 2) * Math.min(1, (1 - k) * 8);
       if (s.life <= 0) s.s.visible = false;
     }
-    (this.headlightGlow.material as THREE.MeshBasicMaterial).opacity = 0.55 + Math.sin(p.time * 30) * 0.01;
+    (this.headlightGlow.material as THREE.MeshBasicMaterial).opacity = 0.8 + Math.sin(p.time * 30) * 0.015;
   }
 
   wipeOn = false;

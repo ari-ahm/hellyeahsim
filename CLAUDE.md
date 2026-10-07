@@ -13,7 +13,8 @@ Notes for working on HELL YEAH SIMULATOR. User-facing docs are in `README.md`.
 | File | Role |
 |---|---|
 | `main.ts` | Renderer, composer, game state `S`, input, simulation loop, HUD, screens, graphics modes (`applyMode`), bonus systems (killer mode, masks, phone missions, mixtape UI) at the bottom |
-| `interior.ts` | Car cabin (car-local space), steering wheel, mirror camera, props, particles, **hand action system** (`beer`, `cigarette`, `horns`, `flex`) |
+| `interior.ts` | Car cabin (car-local space), T-spoke steering wheel, mirror camera, props, particles, **hand action system** (`beer`, `cigarette`, `horns`, `flex`), resting-hand brain (which style each hand holds, when it switches) |
+| `grip.ts` | `Pose` type, pose blending, `HandRest` (per-hand rest state + lift-and-resettle transitions between styles) |
 | `arms.ts` | Runtime arm: SkinnedMesh from worker data, skin shader (vein pump / lava), two-bone IK `Arm.solve(wrist, handQuat)` |
 | `armgen.ts` / `armgen.worker.ts` | SDF arm sculptor + vein growth + Surface Nets + skin weights (pure math, runs in a worker, ~4s) |
 | `can.ts` | Detailed beer can (lathe body, lid with scored flap, ring-pull tab) |
@@ -30,13 +31,23 @@ Notes for working on HELL YEAH SIMULATOR. User-facing docs are in `README.md`.
 ## Conventions
 
 - **Spaces:** world road runs along −Z; road coordinate `s = -z`, lateral `lat = x - roadCenter(s)`.
-  The cabin lives in `cab.root` (car-local; camera ≈ `(0, 1.19, 0)` looking −Z).
+  The cabin lives in `cab.root` (car-local; camera ≈ `(0, 1.19, 0)` looking −Z). The driver sits left of the car's
+  centerline (`CX = 0.3`); the driver door's inner face is at `x = −0.52`, its top (`SILL_Y`) at 0.86 — the left elbow rests there.
+  `cab.ground` is a pitch/roll-free child for decals that must stay on the asphalt (`cab.syncGround()` each frame).
 - **Hand frame:** fingers −Z, back of hand +Y, thumb −X (right hand) / +X (left, mirrored mesh).
   Poses are `{ w: wrist pos (car-local), q: hand quat, curl[4], thumb }`; `P(point, q, localOffset, …)` derives
-  the wrist from where a prop/anchor should be. A key with `pose: null` means the default pose
-  (R = wheel drape, L = elbow out the window / wheel graze).
+  the wrist from where a prop/anchor should be. A key with `pose: null` means that hand's
+  current rest pose. `Pose.pole` steers the elbow.
+- **Rest styles (one-handed driving, as taught by the user):** R = `top` — palm on top of the rim, fingers dangling
+  over the far side (or flat/extended, `h.flat`) — or `horn` — palm on the hub's upper curve (a touch right), knuckles
+  up, fingers lying forward over the top toward the dash. Steering is a **bus knob**: the palm stays glued to its spot on the rim; while steering, fingers close into a
+  fist; once the wheel carries the hand past ~65–90° of wrist roll it opens flat (palm friction), fingers never more than
+  90° from up. `horn` past 90° slides out to `top` palm-flat. L = `door` (elbow on the door, hand over its edge) / `air`;
+  when R is busy: `graze` only (fingertips, elbow still on the door); a held turn turns the graze into `top`.
+  The left hand never does the horn pose (user preference).
+  Debug: `HYS.hands('horn','graze')`, `HYS.steer(1)`, `HYS.gfx(1)` for the clean HD look.
 - **Can:** top along hand −X (`CAN_ROT = rotZ(π/2)`), opening faces can-local +Z. Use `canHandQ(up, backHint)`.
-- **Steering power:** right hand on the wheel = 1, left fingertip graze only = 0.5, no hands = 0.
+- **Steering power:** `cab.steerPower` — right top 1, right horn 0.9, left top 0.85, left graze 0.5, no hands 0 (the NO HANDS pop needs 0.3 s of zero hands).
 - **Music:** all songs are original. Never embed or transcribe copyrighted songs — the mixtape lets users load their own files.
 - Post shader runs **after** `OutputPass` (display space). Colors > 1 in `glow()` materials feed bloom.
 

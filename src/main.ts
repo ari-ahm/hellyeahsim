@@ -136,7 +136,7 @@ const S = {
   shake: 0, damageFx: 0, bump: 0, lat: 0, latAcc: 0, longAcc: 0, offroad: false, offT: 0,
   cop: { on: false, gap: 120, lat: 2, slowT: 0, ramCd: 0 },
   blackout: 0, blackoutPhase: 0, coughT: 0, smallHyCd: 0, wrongT: 0, time: 0, rpm: 900,
-  thoughtT: 6, radioT: 0, killer: 0, combo: 0, comboT: 0, flash: 0, ring: 0, phoneT: 40, autoStormT: 0, fade: 0, terminal: 0, cancerT: 0, coughKick: 0, noHandsT: 0, bpm: 70, flexes: 0, burnout: false as boolean, burnT: 0, djI: 0, throttle: 0, lastSpeed: 0, timeAlive: 0,
+  thoughtT: 6, radioT: 0, killer: 0, combo: 0, comboT: 0, flash: 0, ring: 0, phoneT: 40, autoStormT: 0, fade: 0, terminal: 0, cancerT: 0, coughKick: 0, noHandsT: 0, steerIn: 0, brakeIn: 0, bpm: 70, flexes: 0, burnout: false as boolean, burnT: 0, djI: 0, throttle: 0, lastSpeed: 0, timeAlive: 0,
 };
 function resetRun() {
   Object.assign(S, {
@@ -458,6 +458,7 @@ function simulate(dt: number) {
     throttle = keys.has('w') || keys.has('arrowup') ? 1 : 0;
     brake = keys.has('s') || keys.has('arrowdown') ? 1 : 0;
     steerIn = (keys.has('d') || keys.has('arrowright') ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') ? 1 : 0);
+    if (dbgSteer !== null) steerIn = dbgSteer;
   } else if (auto) {
     throttle = S.v < 24 ? 1 : 0;
     steerIn = clamp((2 - S.lat) * 0.12 - (S.h - roadH) * 3, -1, 1);
@@ -467,11 +468,13 @@ function simulate(dt: number) {
   const drift = (Math.sin(S.time * 0.9) * 0.6 + Math.sin(S.time * 2.3 + 1) * 0.35) * wob * 0.9;
   const cough = S.coughT > 0 ? Math.sin(S.time * 30) * 0.6 : 0;
   const hands = (cab.handsOn.L ? 1 : 0) + (cab.handsOn.R ? 1 : 0);
-  // the drape is a full-power steering technique. the left fingertip graze is... less so
-  const power = !playing ? 1 : cab.handsOn.R ? 1 : cab.handsOn.L ? 0.5 : 0;
+  // a fist on the wheel is full authority. a left fingertip graze is... less so (it firms up when you commit to a turn)
+  const power = !playing ? 1 : cab.steerPower;
+  S.steerIn = steerIn;
+  S.brakeIn = brake;
   if (playing && hands === 0) {
     S.noHandsT += dt;
-    if (S.noHandsT - dt <= 0) pop('NO HANDS!!', { color: '#ff3b3b', sub: 'jesus take the wheel (x2 points)' });
+    if (S.noHandsT >= NO_HANDS && S.noHandsT - dt < NO_HANDS) pop('NO HANDS!!', { color: '#ff3b3b', sub: 'jesus take the wheel (x2 points)' });
   } else S.noHandsT = 0;
   if (playing && cab.win > 0.5) S.meter = Math.min(1, S.meter + dt * 0.035 * Math.min(1, S.v / 30));
   const target = clamp(steerIn * power + drift + cough, -1.2, 1.2);
@@ -619,9 +622,9 @@ function simulate(dt: number) {
     if (S.hellT <= 0) pop('hell yeah has worn off', { color: '#aaa', font: "'Permanent Marker'", sub: 'back to being mortal' });
   }
   if (S.v > 33) S.meter = Math.min(1, S.meter + (S.v - 33) * 0.0011 * dt);
-  S.points += S.v * dt * 0.25 * mult() * (S.noHandsT > 0 ? 2 : 1);
+  S.points += S.v * dt * 0.25 * mult() * (S.noHandsT >= NO_HANDS ? 2 : 1);
   // heart: speed, booze, cardio from flexing, being alive in this car
-  const bpmT = 68 + Math.abs(S.v) * 0.9 + S.bac * 70 + (isHell() ? 55 : 0) + (cab.action?.name === 'flex' ? 45 : 0) + S.heat * 6 + (S.noHandsT > 0 ? 25 : 0);
+  const bpmT = 68 + Math.abs(S.v) * 0.9 + S.bac * 70 + (isHell() ? 55 : 0) + (cab.action?.name === 'flex' ? 45 : 0) + S.heat * 6 + (S.noHandsT >= NO_HANDS ? 25 : 0);
   S.bpm = damp(S.bpm, bpmT, 0.8, dt);
   if (S.bpm > 190 && Math.random() < dt * 0.3) pop('HEART: "BRO"', { color: '#ff4466', sub: `${Math.round(S.bpm)} BPM` });
 
@@ -755,7 +758,8 @@ function hud() {
   hudEls.mask.textContent = mask().id === 'none' ? '' : mask().emoji;
   hudEls.radio.classList.toggle('show', S.radioT > 0);
   const hands = (cab.handsOn.L ? 1 : 0) + (cab.handsOn.R ? 1 : 0);
-  hudEls.onehand.textContent = hands === 0 ? 'NO HANDS — GOD IS DRIVING' : 'FINGERTIP STEERING';
+  const lTech: Record<string, string> = { graze: 'FINGERTIP STEERING', top: 'BUS DRIVER PALM' };
+  hudEls.onehand.textContent = hands === 0 ? 'NO HANDS — GOD IS DRIVING' : cab.restL.fist > 0.5 ? 'WHITE-KNUCKLE ONE-HANDER' : lTech[cab.restL.style] ?? 'FINGERTIP STEERING';
   hudEls.onehand.classList.toggle('show', !cab.handsOn.R);
   hudEls.onehand.classList.toggle('nohands', hands === 0);
   hudEls.bpm.textContent = String(Math.round(S.bpm));
@@ -777,14 +781,14 @@ function frame() {
     dt = 0;
     cab.action.t = freezeAt;
     for (const e of cab.action.events) if (!e.done && e.t <= freezeAt) { e.done = true; e.fn(); }
-    cab.update(1e-4, { steer: 0, v: 0, latAcc: 0, longAcc: 0, time: S.time, beat: 0, hell: 0, bump: 0, bac: 0, heart: 70 });
+    cab.update(1e-4, { steer: 0, steerIn: 0, throttle: 0, brake: 0, v: 0, latAcc: 0, longAcc: 0, time: S.time, beat: 0, hell: 0, bump: 0, bac: 0, heart: 70 });
   }
 
   if (dt > 0) {
     simulate(dt);
     if (mode === 'play' || mode === 'title' || mode === 'splash' || mode === 'disclaimer') {
       cab.update(dt, {
-        steer: S.steer, v: S.v, latAcc: S.latAcc, longAcc: S.longAcc, time: S.time, beat: audio.beat,
+        steer: S.steer, steerIn: S.steerIn, throttle: S.throttle, brake: S.brakeIn, v: S.v, latAcc: S.latAcc, longAcc: S.longAcc, time: S.time, beat: audio.beat,
         hell: isHell() ? 1 : 0, bump: S.bump, bac: S.bac, heart: S.bpm,
       });
     }
@@ -794,6 +798,7 @@ function frame() {
   const roll = -S.latAcc * 0.0018;
   cab.root.position.set(S.x, S.bump * rand(0, 0.05), -S.s);
   cab.root.rotation.set(S.longAcc * 0.0012 + S.bump * rand(-0.01, 0.01), -S.h, roll, 'YXZ');
+  cab.syncGround();
   S.shake = damp(S.shake, 0, 5, dt || 0.016);
   cab.look.x = damp(cab.look.x, lookT.x, looking ? 14 : 5, dt || 0.016);
   cab.look.y = damp(cab.look.y, lookT.y, looking ? 14 : 5, dt || 0.016);
@@ -862,6 +867,8 @@ function frame() {
 }
 let cabFrame = 0;
 let freezeAt: number | null = null;
+let dbgSteer: number | null = null;
+const NO_HANDS = 0.3; // seconds of zero hands before the universe notices
 let uHell = 0;
 function lerpUniform(_: string, target: number, dt: number) {
   uHell = damp(uHell, target, 3, dt || 0.016);
@@ -885,6 +892,11 @@ cab.root.add(dbgCam);
   /** debug: freeze the current hand action at time t (null to release) */
   at(t: number | null) { freezeAt = t; },
   terminal: () => terminal(),
+  /** debug: force resting hand styles, e.g. hands('spoke', 'graze'); hands() to release */
+  hands(R?: string, L?: string) { cab.force = { R, L } as typeof cab.force; },
+  /** debug: hold the steering input (null to release) */
+  steer(x: number | null) { dbgSteer = x; },
+  gfx(n: number) { gfx = n; applyMode(); },
   cough: (n: number) => coughFit(n),
 };
 
@@ -1138,7 +1150,7 @@ function updateBonus(dt: number) {
   if (mission) {
     mission.t -= dt;
     mission.max = Math.max(mission.max, S.v * 2.237);
-    if (mission.def.id === 'nohands' && S.noHandsT > 0) mission.acc += dt;
+    if (mission.def.id === 'nohands' && S.noHandsT >= NO_HANDS) mission.acc += dt;
     if (mission.def.id === 'burnout' && S.burnout) mission.acc += dt;
     if (mission.def.id !== 'storm' && missionDone(mission)) {
       completeMission();

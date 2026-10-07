@@ -40,7 +40,7 @@ export function rig() {
   const S: Vec = [0, 0, 0], E: Vec = [0, 0, -0.33], W: Vec = [0, 0, -0.64];
   const MCP: Vec[] = [[-0.0355, 0.0, -0.736], [-0.0118, 0.002, -0.742], [0.0122, 0.001, -0.738], [0.0345, -0.002, -0.727]];
   const FL = [[0.046, 0.027, 0.023], [0.05, 0.031, 0.025], [0.047, 0.029, 0.024], [0.037, 0.023, 0.021]];
-  const FR = [[0.0116, 0.0092], [0.0119, 0.0095], [0.0113, 0.009], [0.0098, 0.008]];
+  const FR = [[0.0108, 0.0087], [0.011, 0.0089], [0.0105, 0.0085], [0.0092, 0.0076]];
   const FD: Vec[] = [norm(-0.15, 0, -1), norm(-0.03, 0, -1), norm(0.09, 0, -1), norm(0.2, 0, -1)];
   const fj: Vec[][] = MCP.map((m, f) => {
     const j1 = add(m, mul(FD[f], FL[f][0]));
@@ -137,7 +137,7 @@ const smin = (a: number, b: number, k: number) => {
   return Math.min(a, b) - h * h * k * 0.25;
 };
 const JOIN_K = [0, 0.0045, 0.0045, 0.0045, 0.0045, 0.011];
-const VEIN_K = 0.0032;
+const VEIN_K = 0.005;
 const NG = 6;
 
 // ---------------------------------------------------------------- build
@@ -149,26 +149,34 @@ export function buildArm(progress: (p: number, label: string) => void = () => {}
   const nails: Prim[] = [];
   const P = (p: Prim) => (prims.push(p), p);
 
-  // upper arm: the part that lifts the beers
-  P(cone([0, 0, 0.02], [0, 0, -0.33], 0.07, 0.054, 0.02));
-  P(ell([0, 0.014, -0.0], [0.085, 0.082, 0.08], 0.03));
-  P(ell([0.006, 0.045, -0.19], [0.06, 0.06, 0.115], 0.028));
-  P(ell([0.0, -0.042, -0.16], [0.063, 0.055, 0.125], 0.028));
+  // upper arm: the part that lifts the beers. +Y is the inside of the elbow bend (biceps), -Y the triceps.
+  // separate heads with small blend radii so the grooves between them survive.
+  P(cone([0, 0, 0.02], [0, 0, -0.33], 0.1, 0.07, 0.02));
+  P(ell([0, 0.01, 0.0], [0.125, 0.12, 0.115], 0.03)); // deltoid
+  P(ell([0.04, 0.035, -0.07], [0.085, 0.08, 0.09], 0.02)); // front delt insertion
+  P(ell([0.004, 0.07, -0.19], [0.088, 0.08, 0.13], 0.016)); // biceps
+  P(ell([0.0, 0.098, -0.205], [0.064, 0.05, 0.075], 0.014)); // the peak
+  P(ell([0.07, 0.025, -0.25], [0.045, 0.05, 0.08], 0.014)); // brachialis
+  P(ell([0.02, -0.07, -0.13], [0.085, 0.075, 0.14], 0.016)); // triceps, long head
+  P(ell([0.07, -0.04, -0.1], [0.06, 0.065, 0.1], 0.014)); // triceps, lateral head (horseshoe)
+  P(ell([-0.05, -0.045, -0.2], [0.05, 0.055, 0.09], 0.014)); // triceps, medial head
   // elbow
-  P(ell([0, -0.01, -0.33], [0.058, 0.052, 0.052], 0.02));
-  P(ell([0, -0.046, -0.335], [0.024, 0.024, 0.026], 0.014));
-  // forearm (pronated): extensors on top, flexors below, brachioradialis on the thumb side. GIRTH.
-  P(cone([0, 0, -0.34], [0, 0, -0.622], 0.053, 0.031, 0.022));
-  P(cone([-0.041, 0.028, -0.35], [-0.027, 0.011, -0.54], 0.042, 0.014, 0.03));
-  P(cone([0.012, 0.044, -0.36], [0.005, 0.02, -0.565], 0.04, 0.013, 0.03));
-  P(cone([0.005, -0.041, -0.35], [0.0, -0.017, -0.57], 0.046, 0.015, 0.03));
-  P(cone([0.046, -0.005, -0.37], [0.028, -0.005, -0.59], 0.031, 0.014, 0.024));
-  P(ell([0, 0, -0.632], [0.042, 0.025, 0.03], 0.018));
-  P(ell([0.036, 0.01, -0.627], [0.011, 0.011, 0.011], 0.009));
+  P(ell([0, -0.01, -0.33], [0.085, 0.075, 0.07], 0.02));
+  P(ell([0, -0.072, -0.338], [0.032, 0.03, 0.034], 0.014));
+  // forearm (pronated): extensors on top, flexors below, brachioradialis on the thumb side.
+  // the meme forearm: a cartoon taper from a slab of muscle at the elbow down to a sane wrist.
+  P(cone([0, 0, -0.34], [0, 0, -0.622], 0.078, 0.036, 0.02));
+  P(cone([-0.058, 0.046, -0.35], [-0.034, 0.014, -0.555], 0.064, 0.016, 0.018)); // brachioradialis
+  P(cone([-0.03, 0.068, -0.37], [-0.014, 0.03, -0.5], 0.05, 0.016, 0.016)); // ext. carpi radialis
+  P(cone([0.018, 0.07, -0.37], [0.006, 0.026, -0.575], 0.054, 0.015, 0.016)); // extensor digitorum
+  P(cone([0.008, -0.065, -0.35], [0.0, -0.02, -0.58], 0.068, 0.017, 0.018)); // flexors
+  P(cone([0.07, -0.01, -0.37], [0.034, -0.006, -0.595], 0.05, 0.016, 0.016)); // ulnar side
+  P(ell([0, 0, -0.632], [0.048, 0.029, 0.033], 0.018));
+  P(ell([0.041, 0.011, -0.627], [0.013, 0.013, 0.013], 0.009));
   // palm: meaty
-  P(box([0, -0.002, -0.69], [0.039, 0.0115, 0.043], 0.012, 0.013));
-  P(ell([-0.031, -0.015, -0.668], [0.024, 0.018, 0.035], 0.013));
-  P(ell([0.034, -0.012, -0.688], [0.015, 0.015, 0.035], 0.011));
+  P(box([0, -0.002, -0.69], [0.04, 0.0125, 0.043], 0.012, 0.013));
+  P(ell([-0.032, -0.016, -0.668], [0.026, 0.019, 0.036], 0.013));
+  P(ell([0.035, -0.013, -0.688], [0.016, 0.016, 0.036], 0.011));
   for (const m of MCP) {
     P(cone([m[0] * 0.55, 0.011, -0.648], [m[0], 0.0105, m[2] + 0.006], 0.0052, 0.0058, 0.01)); // extensor tendons
   }
@@ -242,8 +250,9 @@ export function buildArm(progress: (p: number, label: string) => void = () => {}
       const p = prims[list[i]];
       G[p.g] = smin(G[p.g], evalPrim(p, x, y, z), p.k);
     }
+    // each finger melts into the palm, but never into its neighbours (no webbed mitten hands)
     let d = G[0];
-    for (let g = 1; g < NG; g++) if (G[g] < 1e8) d = smin(d, G[g], JOIN_K[g]);
+    for (let g = 1; g < NG; g++) if (G[g] < 1e8) d = Math.min(d, smin(G[0], G[g], JOIN_K[g]));
     return d > 0.05 ? 0.05 : d;
   };
   const evalFull = (x: number, y: number, z: number) => {
@@ -266,7 +275,7 @@ export function buildArm(progress: (p: number, label: string) => void = () => {}
   progress(0.02, 'growing veins');
   const surf = (o: Vec, d: Vec): Vec | null => {
     let prev = 0;
-    for (let r = 0.004; r < 0.13; r += 0.003) {
+    for (let r = 0.004; r < 0.26; r += 0.003) {
       if (evalBase(o[0] + d[0] * r, o[1] + d[1] * r, o[2] + d[2] * r) > 0) {
         let lo = prev, hi = r;
         for (let i = 0; i < 12; i++) {
@@ -288,38 +297,64 @@ export function buildArm(progress: (p: number, label: string) => void = () => {}
     const n = grad(evalBase, p[0], p[1], p[2]);
     return add(p, mul(n, -r * 0.12));
   };
-  /** random walk around an axis */
-  const walk = (A: Vec, B: Vec, t: number, phi: number, r: number, life: number, dir: number, depth: number, phiLo: number, phiHi: number) => {
+  /**
+   * random walk over the skin, marching along the arm axis (the rest-pose arm is a straight line down -Z,
+   * so "around the axis" is just an angle). phi 0 = +Y. walks freely from the wrist over the elbow to the shoulder.
+   */
+  const Z_END = 0.03;
+  const walk = (z: number, phi: number, r: number, life: number, dir: number, depth: number, phiLo: number, phiHi: number) => {
     let prev: Vec | null = null, prevR = r, dphi = 0;
     for (let s = 0; s < life; s++) {
-      const o: Vec = [A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t, A[2] + (B[2] - A[2]) * t];
-      const hit = surf(o, [Math.sin(phi), Math.cos(phi), 0]);
+      const hit = surf([0, 0, z], [Math.sin(phi), Math.cos(phi), 0]);
       if (!hit) break;
       const p = place(hit, r);
       if (prev) addSeg(prev, p, prevR, r);
       prev = p;
       prevR = r;
-      t += dir * rr(0.008, 0.014);
+      z += dir * rr(0.0026, 0.0042);
       dphi += rr(-0.04, 0.04);
       dphi *= 0.9;
       phi += dphi;
       if (phi < phiLo || phi > phiHi) dphi -= (phi - (phiLo + phiHi) / 2) * 0.02;
-      r = Math.max(0.0016, r * rr(0.992, 1.004));
-      if (t < 0 || t > 1) break;
-      if (depth < 2 && rnd() < 0.045) walk(A, B, t, phi, r * 0.72, Math.floor(life * rr(0.2, 0.5)), dir, depth + 1, phiLo - 0.6, phiHi + 0.6);
-      if (rnd() < 0.015) {
+      r = Math.max(0.002, r * rr(0.994, 1.004));
+      if (z < -0.63 || z > Z_END) break;
+      if (depth < 2 && rnd() < 0.022) walk(z, phi, r * 0.72, Math.floor(life * rr(0.15, 0.4)), dir, depth + 1, phiLo - 0.6, phiHi + 0.6);
+      if (rnd() < 0.006) {
         // perforator: short squiggle diving sideways
-        walk(A, B, t, phi + (rnd() < 0.5 ? -1 : 1) * 0.15, r * 0.6, 5, dir, 3, -9, 9);
+        walk(z, phi + (rnd() < 0.5 ? -1 : 1) * 0.15, r * 0.6, 6, dir, 3, -9, 9);
       }
     }
     return prev;
   };
-  // forearm: absolutely shredded
-  const FA: Vec = [0, 0, -0.355], FB: Vec = [0, 0, -0.63];
-  for (let i = 0; i < 11; i++) {
-    const phi = -2.3 + (i / 10) * 4.1 + rr(-0.12, 0.12);
-    walk(FB, FA, rr(0.0, 0.08), phi, rr(0.003, 0.0042), Math.floor(rr(34, 76)), 1, 0, phi - 0.8, phi + 0.8);
+  // forearm: absolutely shredded. some of these die out around the elbow, the rest keep climbing.
+  for (let i = 0; i < 8; i++) {
+    const phi = -2.4 + (i / 7) * 4.3 + rr(-0.15, 0.15);
+    const life = rnd() < 0.35 ? rr(130, 190) : rr(55, 100);
+    walk(rr(-0.625, -0.6), phi, rr(0.0058, 0.0074), Math.floor(life), 1, 0, phi - 0.8, phi + 0.8);
   }
+  // the trunk lines, wrist to shoulder without stopping: cephalic up the thumb side, basilic up the pinky side,
+  // and the median that climbs the top and spills over the elbow crease onto the biceps
+  walk(-0.62, -1.55, 0.0082, 200, 1, 0, -2.1, -1.0);
+  walk(-0.62, 1.95, 0.0076, 200, 1, 0, 1.4, 2.5);
+  walk(-0.6, -0.35, 0.0078, 200, 1, 0, -0.9, 0.4);
+  {
+    // median cubital: the diagonal across the inside of the elbow
+    let prev: Vec | null = null;
+    for (let k = 0; k <= 34; k++) {
+      const f = k / 34;
+      const hit = surf([0, 0, -0.39 + f * 0.1], [Math.sin(-1.5 + f * 3.2), Math.cos(-1.5 + f * 3.2), 0]);
+      if (!hit) continue;
+      const p = place(hit, 0.0072);
+      if (prev) addSeg(prev, p, 0.0072, 0.0072);
+      prev = p;
+    }
+  }
+  // upper arm: a vascular roadmap over the biceps, delts and triceps
+  for (let i = 0; i < 6; i++) {
+    const phi = -3.0 + (i / 6) * 6.0 + rr(-0.2, 0.2);
+    walk(rr(-0.37, -0.3), phi, rr(0.0062, 0.0078), Math.floor(rr(55, 110)), 1, 0, phi - 0.7, phi + 0.7);
+  }
+  walk(-0.33, 0.05, 0.0088, 120, 1, 0, -0.3, 0.4); // the one that splits the biceps in half
   // back of hand: from between the knuckles to the wrist, then up the forearm
   const gaps = [MCP[0][0] - 0.008, (MCP[0][0] + MCP[1][0]) / 2, (MCP[1][0] + MCP[2][0]) / 2, (MCP[2][0] + MCP[3][0]) / 2, MCP[3][0] + 0.006];
   for (const gx of gaps) {
@@ -339,7 +374,7 @@ export function buildArm(progress: (p: number, label: string) => void = () => {}
     }
     if (prev) {
       const phi = Math.atan2(prev[0], prev[1]);
-      walk(FB, FA, 0.0, phi, r, Math.floor(rr(20, 50)), 1, 1, phi - 0.6, phi + 0.6);
+      walk(prev[2], phi, r * 1.3, Math.floor(rr(30, 80)), 1, 1, phi - 0.6, phi + 0.6);
     }
   }
   {
@@ -354,9 +389,6 @@ export function buildArm(progress: (p: number, label: string) => void = () => {}
       prev = p;
     }
   }
-  // upper arm: cephalic + basilic (mostly off-screen, still pumped)
-  const UA: Vec = [0, 0, -0.31], UB: Vec = [0, 0, -0.04];
-  for (const phi of [-1.2, -0.3, 0.6, 1.5]) walk(UA, UB, 0.0, phi, rr(0.0032, 0.0042), 45, 1, 0, phi - 0.5, phi + 0.5);
 
   veins.forEach((p, i) => insert(binsVein, i, p.min, p.max, VEIN_K + 0.004));
 
@@ -490,7 +522,7 @@ export function buildArm(progress: (p: number, label: string) => void = () => {}
     const db = evalBase(x, y, z);
     let g = 0;
     for (let k = 1; k < NG; k++) if (G[k] < G[g]) g = k;
-    const vv = Math.min(1, Math.max(0, db / 0.0024));
+    const vv = Math.min(1, Math.max(0, db / 0.0045));
     vein[i] = vv * vv * (3 - 2 * vv);
     let dn = 1e9;
     for (const p of nails) dn = Math.min(dn, evalPrim(p, x, y, z));
@@ -510,7 +542,7 @@ export function buildArm(progress: (p: number, label: string) => void = () => {}
       const d = Math.hypot(x - J[0], y - J[1], z - J[2]);
       if (d < 0.016 && n[1] > 0.2) { const k = (1 - d / 0.016) * 0.08; r += k * 0.5; gg -= k * 0.4; b -= k * 0.3; }
     }
-    if (z > -0.36 && z < -0.3 && n[1] < 0) { r -= 0.05; gg -= 0.03; } // elbow
+    if (z > -0.38 && z < -0.29 && n[1] < 0) { r -= 0.05; gg -= 0.03; } // elbow
     r = r * (1 - vein[i] * 0.12);
     gg = gg * (1 - vein[i] * 0.2);
     b = b * (1 + vein[i] * 0.1);
