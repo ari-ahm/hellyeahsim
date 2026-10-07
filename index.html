@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#000000" />
     <title>HELL YEAH SIMULATOR</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -148,7 +151,7 @@
 
     <div id="maskov"></div>
     <div id="masks" class="screen">
-      <div class="masks-box">
+      <div class="masks-box tscroll">
         <h2>WHO ARE YOU TONIGHT?</h2>
         <div id="maskgrid"></div>
         <div id="maskquote"></div>
@@ -163,7 +166,7 @@
         <div class="again">PRESS <b>ENTER</b> TO KEEP DRIVING</div>
       </div>
     </div>
-    <div id="mixtape">
+    <div id="mixtape" class="tscroll">
       <h3>📼 MIXTAPE</h3>
       <p>Load your own music files (mp3/ogg/wav). They stay in this browser — never uploaded.</p>
       <div class="mxrow"><b>MENU THEME</b><span id="mx-menu"></span><label>LOAD<input type="file" id="mxf-menu" accept="audio/*" /></label><button id="mxc-menu">CLEAR</button></div>

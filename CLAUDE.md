@@ -27,6 +27,7 @@ Notes for working on HELL YEAH SIMULATOR. User-facing docs are in `README.md`.
 | `bonus.ts` | Masks, phone missions, voicemails, grading data |
 | `art.ts` | All canvas-generated textures |
 | `content.ts` | Joke text: popups, thoughts, tips, ranks, obituary headlines |
+| `touch.ts` | Mobile controls: steering pad, pedals, action/system buttons, menu tap targets. Every button calls `keyDown`/`keyUp` in `main.ts` with a key name, so touch and keyboard share one code path |
 
 ## Conventions
 

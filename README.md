@@ -45,6 +45,11 @@ takes a few seconds while the forearm is forged in a Web Worker.
 | title: `U` | 📼 mixtape (load your own music) |
 | while driving, type `666` | 🤫 |
 
+**Touch / mobile** (landscape; detected automatically): drag the left pad to steer (analog), hold GAS / BRAKE on
+the right (both = burnout), action buttons above the pedals (🍺 🚬 💪 🖐️ 📯 🤘), 📻 🎨 🌴 🔇 ⏸ along the top,
+📞 pops up when the phone rings, drag anywhere else to look around. Menus are tap-to-select; the title screen
+has MASK / MIXTAPE / THEME / GRAPHICS buttons. The secret: tap the wanted stars three times.
+
 ## Features
 
 - **The Forearm** — SDF-sculpted muscular arm with a procedurally grown vein network, meshed with Surface

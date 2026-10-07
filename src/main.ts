@@ -16,6 +16,7 @@ import { loadMixtape, saveFiles, clearSlot, type Slot } from './mixtape';
 import { MASKS, pickMission, pickCaller, nextCallDelay, VOICEMAILS, grade, KILLER_LINES, type MissionDef } from './bonus';
 import { MSG, THOUGHTS, DRUNK_THOUGHTS, TIPS, RANKS, CANCER_HEADS } from './content';
 import { clamp, damp, pick, rand, lerp } from './util';
+import { initTouch, isTouch } from './touch';
 
 // ---------------------------------------------------------------- setup
 const canvas = document.getElementById('c') as HTMLCanvasElement;
@@ -256,6 +257,10 @@ function hellYeah() {
 addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault();
+  keyDown(k);
+});
+/** every input — keyboard or touch button — lands here as a key name */
+function keyDown(k: string) {
   if (keys.has(k)) return;
   keys.add(k);
   if (mode === 'disclaimer') return armsReady ? goSplash() : undefined;
@@ -315,25 +320,40 @@ addEventListener('keydown', (e) => {
     audio.honk();
     S.meter = Math.min(1, S.meter + 0.005);
   }
-});
-addEventListener('keyup', (e) => {
-  const k = e.key.toLowerCase();
+}
+function keyUp(k: string) {
   keys.delete(k);
   if (k === 'q') cab.winHeld = false;
-});
+}
+addEventListener('keyup', (e) => keyUp(e.key.toLowerCase()));
 addEventListener('blur', () => keys.clear());
 // free-look: hold a mouse button and drag to glance around. snaps back when released.
+// on touch: drag anywhere that isn't a control. tracks one pointer so the gas finger doesn't hijack it.
 let looking = false;
 const lookT = { x: 0, y: 0 };
-addEventListener('pointerdown', () => (looking = mode === 'play'));
-addEventListener('pointerup', () => {
-  looking = false;
-  lookT.x = lookT.y = 0;
+let lookId = -1, lookX = 0, lookY = 0;
+addEventListener('pointerdown', (e) => {
+  if (mode !== 'play' || looking) return;
+  looking = true;
+  lookId = e.pointerId;
+  lookX = e.clientX;
+  lookY = e.clientY;
 });
+const endLook = (e: PointerEvent) => {
+  if (e.pointerId !== lookId) return;
+  looking = false;
+  lookId = -1;
+  lookT.x = lookT.y = 0;
+};
+addEventListener('pointerup', endLook);
+addEventListener('pointercancel', endLook);
 addEventListener('pointermove', (e) => {
-  if (!looking) return;
-  lookT.x = clamp(lookT.x - e.movementX * 0.004, -1.1, 1.1);
-  lookT.y = clamp(lookT.y - e.movementY * 0.003, -0.45, 0.35);
+  if (!looking || e.pointerId !== lookId) return;
+  const k = e.pointerType === 'touch' ? 1.6 : 1;
+  lookT.x = clamp(lookT.x - (e.clientX - lookX) * 0.004 * k, -1.1, 1.1);
+  lookT.y = clamp(lookT.y - (e.clientY - lookY) * 0.003 * k, -0.45, 0.35);
+  lookX = e.clientX;
+  lookY = e.clientY;
 });
 addEventListener('pointerdown', () => {
   if (mode === 'disclaimer' && armsReady) goSplash();
@@ -372,7 +392,7 @@ function startGame() {
   if (mask().id !== 'none') setTimeout(() => pop(`${mask().emoji} ${mask().name}`, { color: mask().color, font: "'Bungee'", sub: mask().quote }), 1800);
   S.radioT = 5;
   audio.speak("let's go", 0.2, 0.9);
-  setTimeout(() => pop('DRIVE.', { sub: 'right after a beer (press B)', color: '#ffd23a' }), 600);
+  setTimeout(() => pop('DRIVE.', { sub: isTouch() ? 'right after a beer (tap 🍺)' : 'right after a beer (press B)', color: '#ffd23a' }), 600);
 }
 
 let tipI = 0;
@@ -458,6 +478,7 @@ function simulate(dt: number) {
     throttle = keys.has('w') || keys.has('arrowup') ? 1 : 0;
     brake = keys.has('s') || keys.has('arrowdown') ? 1 : 0;
     steerIn = (keys.has('d') || keys.has('arrowright') ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') ? 1 : 0);
+    if (touchSteer !== null) steerIn = touchSteer;
     if (dbgSteer !== null) steerIn = dbgSteer;
   } else if (auto) {
     throttle = S.v < 24 ? 1 : 0;
@@ -875,6 +896,7 @@ function frame() {
 let cabFrame = 0;
 let freezeAt: number | null = null;
 let dbgSteer: number | null = null;
+let touchSteer: number | null = null;
 const NO_HANDS = 0.3; // seconds of zero hands before the universe notices
 let uHell = 0;
 function lerpUniform(_: string, target: number, dt: number) {
@@ -907,6 +929,15 @@ cab.root.add(dbgCam);
   cough: (n: number) => coughFit(n),
   world, traffic, renderer,
 };
+
+initTouch({
+  down: keyDown,
+  up: keyUp,
+  steer: (v) => (touchSteer = v),
+  mode: () => (masksOpen ? 'masks' : mode),
+  ringing: () => mode === 'play' && S.ring > 0,
+  unlockAudio: () => void audio.ctx?.resume(),
+});
 
 // ---------------------------------------------------------------- forging the forearm
 let armsReady = false;
@@ -962,6 +993,16 @@ function renderMasks() {
   document.body.style.setProperty('--maskc', mask().color);
   document.body.dataset.mask = mask().id;
 }
+// tap/click a card to pick it, tap the picked one again to wear it
+$('maskgrid').addEventListener('click', (e) => {
+  const card = (e.target as HTMLElement).closest('.mcard');
+  if (!card || !masksOpen) return;
+  const i = [...card.parentElement!.children].indexOf(card);
+  if (i === maskIdx) return maskKey('enter');
+  maskIdx = i;
+  audio.blip(440 + maskIdx * 60);
+  renderMasks();
+});
 function openMasks() {
   masksOpen = true;
   renderMasks();
