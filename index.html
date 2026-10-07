@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HELL YEAH SIMULATOR</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bungee&family=Bungee+Shade&family=Metal+Mania&family=Permanent+Marker&family=Rubik+Glitch&family=VT323&family=Old+Standard+TT:ital,wght@0,400;0,700;1,400&family=UnifrakturMaguntia&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+
+    <!-- NFS-style legal screen -->
+    <div id="disclaimer" class="screen show">
+      <div class="disc">
+        <h2>WARNING</h2>
+        <p>
+          The hell yeahing depicted in this game is performed by a professional forearm on a closed,
+          entirely imaginary course.
+        </p>
+        <p>Do not attempt to hell yeah on public roads.</p>
+        <p>
+          Never drink and drive. Don't smoke. Always wear your seatbelt. Obey all traffic laws. Respect the deer. Call
+          your mom.
+        </p>
+        <p class="big">Do your hell yeahing in the game, not on the streets.</p>
+        <p class="tiny">
+          No deer were harmed in the making of this game. They are polygons. They do not feel anything. Probably.
+        </p>
+        <div id="loading"><div class="lb"><i id="loadbar"></i></div><div id="loadlbl">FORGING FOREARM...</div></div>
+        <div class="press" id="press" style="display:none">PRESS ANY KEY TO ACKNOWLEDGE THAT YOU ARE NOT HIM</div>
+      </div>
+    </div>
+
+    <div id="splash" class="screen">
+      <div class="splash-logo">
+        <div class="goat">🐐</div>
+        <div class="studio">GOATSOFT</div>
+        <div class="tag">challenge everything (except the beer)</div>
+      </div>
+    </div>
+
+    <div id="title" class="screen">
+      <div class="title-wrap">
+        <div class="title-top">THE&nbsp;"DRIVING IN MY CAR RIGHT AFTER A BEER"&nbsp;EXPERIENCE™</div>
+        <h1 class="logo"><span class="l1">HELL YEAH</span><span class="l2">SIMULATOR</span></h1>
+        <div class="title-sub">now with 300% more forearm</div>
+        <div class="start">PRESS <b>ENTER</b> TO HELL YEAH</div>
+        <div class="controls">
+          <div><kbd>W</kbd><kbd>S</kbd> gas / brake &nbsp;(<kbd>W</kbd>+<kbd>S</kbd> burnout)</div>
+          <div><kbd>A</kbd><kbd>D</kbd> steer (hands recommended)</div>
+          <div><kbd>B</kbd> crack a cold one (two-handed)</div>
+          <div><kbd>C</kbd> smoke a cig (4 drags)</div>
+          <div><kbd>G</kbd> flex the forearm</div>
+          <div><kbd>Q</kbd> (hold) hand out the window</div>
+          <div><kbd>H</kbd> / <kbd>SPACE</kbd> HELL YEAH</div>
+          <div><kbd>V</kbd> graphics mode &nbsp; <kbd>F</kbd> honk</div>
+          <div><kbd>R</kbd> radio &nbsp; <kbd>M</kbd> mute &nbsp; <kbd>P</kbd> pause</div>
+          <div><kbd>MOUSE</kbd> hold + drag to look around</div>
+          <div><kbd>E</kbd> answer the phone</div>
+          <div><kbd>T</kbd> world theme (desert / vice)</div>
+          <div><kbd>K</kbd> choose a mask &nbsp; <kbd>U</kbd> 📼 mixtape</div>
+          <div class="secret">while driving, type the number of the beast...</div>
+          <div id="modelbl" class="modelbl">GRAPHICS: BUCKSHOT</div>
+          <div id="masklbl" class="modelbl">MASK: 🙂 BARE FACE</div>
+        </div>
+        <div class="tips" id="tip"></div>
+      </div>
+    </div>
+
+    <div id="hud">
+      <div class="score">
+        <div class="lbl">HELL YEAH POINTS</div>
+        <div id="pts">0</div>
+        <div id="mult"></div>
+      </div>
+      <div class="wanted">
+        <div id="stars">☆☆☆☆☆</div>
+        <div class="lbl" id="heatlbl">HEAT</div>
+        <div class="odo"><span id="odo">0.0</span> MI</div>
+      </div>
+      <div class="meters">
+        <div class="meter"><span>BLOOD ALCOHOL</span><div class="bar"><i id="m-bac"></i></div></div>
+        <div class="meter"><span>LUNG HP</span><div class="bar"><i id="m-lung"></i></div></div>
+        <div class="meter"><span>CAR INTEGRITY</span><div class="bar"><i id="m-hp"></i></div></div>
+        <div class="meter" id="steadyrow"><span>STEADY HANDS</span><div class="bar"><i id="m-steady"></i></div></div>
+      </div>
+      <div class="speedo">
+        <div id="mph">0</div>
+        <div class="lbl">MPH</div>
+      </div>
+      <div class="hy">
+        <div class="hy-bar"><i id="m-hy"></i></div>
+        <div class="hy-lbl" id="hylbl">HELL YEAH METER</div>
+      </div>
+      <div class="radio" id="radio"></div>
+      <div class="thought" id="thought"></div>
+      <div class="onehand" id="onehand">ONE-HANDED DRIVING</div>
+      <div id="combo" class="combo"></div>
+      <div id="killerlbl" class="killerlbl"></div>
+      <div id="mission" class="mission"></div>
+      <div id="maskbadge" class="maskbadge"></div>
+      <div class="heartrate"><span id="heart">♥</span> <span id="bpm">70</span> BPM</div>
+    </div>
+
+    <div id="vhs"><div class="play">PLAY ▶</div><div class="sp">SP</div><div class="stamp">OCT. 07 1997<br />03:33 AM</div></div>
+    <div id="fried"></div>
+    <div id="popups"></div>
+    <div id="flash"></div>
+
+    <div id="pause" class="screen">
+      <div class="pause-box">
+        <h2>PAUSED</h2>
+        <p>the goat is contemplating</p>
+        <p class="tiny">P to resume</p>
+      </div>
+    </div>
+
+    <div id="obit" class="screen">
+      <div class="paper">
+        <div class="masthead">The Daily Underground</div>
+        <div class="dateline"><span>VOL. 666</span><span>3:33 AM EDITION</span><span>PRICE: ONE (1) BEER</span></div>
+        <h1 id="obit-head">LOCAL GOAT KING DIES DOING WHAT HE LOVED</h1>
+        <h3 id="obit-sub">"Hell yeah," witnesses report him saying, moments before.</h3>
+        <div class="cols">
+          <div class="photo"><div class="ph" id="obit-photo">🚗💥🐐</div><div class="cap">Artist's rendition. The artist was also drunk.</div></div>
+          <div class="body" id="obit-body"></div>
+        </div>
+        <div class="again">PRESS <b>ENTER</b> TO RESPAWN &nbsp;—&nbsp; (HE'S BACK. HELL YEAH.)</div>
+      </div>
+    </div>
+
+    <div id="busted" class="screen">
+      <div class="mug">
+        <div class="lines"></div>
+        <div class="goatface">🐐</div>
+        <div class="placard"><div>COUNTY OF NOWHERE</div><div class="big">KING, A. — #666</div><div id="bust-date"></div></div>
+        <div class="busted-word">BUSTED</div>
+        <div class="charges" id="charges"></div>
+        <div class="again">PRESS <b>ENTER</b> TO POST BAIL (WITH BEER)</div>
+      </div>
+    </div>
+
+    <div id="maskov"></div>
+    <div id="masks" class="screen">
+      <div class="masks-box">
+        <h2>WHO ARE YOU TONIGHT?</h2>
+        <div id="maskgrid"></div>
+        <div id="maskquote"></div>
+        <div class="hint">◀ ▶ choose • ENTER wear</div>
+      </div>
+    </div>
+    <div id="results" class="screen">
+      <div class="results-box">
+        <h2>THE STORM HAS PASSED</h2>
+        <div id="results-body"></div>
+        <div class="gradewrap">GRADE <span id="results-grade">A</span></div>
+        <div class="again">PRESS <b>ENTER</b> TO KEEP DRIVING</div>
+      </div>
+    </div>
+    <div id="mixtape">
+      <h3>📼 MIXTAPE</h3>
+      <p>Load your own music files (mp3/ogg/wav). They stay in this browser — never uploaded.</p>
+      <div class="mxrow"><b>MENU THEME</b><span id="mx-menu"></span><label>LOAD<input type="file" id="mxf-menu" accept="audio/*" /></label><button id="mxc-menu">CLEAR</button></div>
+      <div class="mxrow"><b>STORM THEME</b><span id="mx-storm"></span><label>LOAD<input type="file" id="mxf-storm" accept="audio/*" /></label><button id="mxc-storm">CLEAR</button></div>
+      <div class="mxrow"><b>MIXTAPE FM</b><span id="mx-radio"></span><label>ADD<input type="file" id="mxf-radio" accept="audio/*" multiple /></label><button id="mxc-radio">CLEAR</button></div>
+      <button id="mx-close">CLOSE (U)</button>
+    </div>
+    <div id="blackout"><div id="blackout-text"></div></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
