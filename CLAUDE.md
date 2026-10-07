@@ -22,7 +22,9 @@ Notes for working on HELL YEAH SIMULATOR. User-facing docs are in `README.md`.
 | `traffic.ts` | Cars, deer, cop, launched debris |
 | `hellfx.ts` | World-space burnout smoke, hell-mode fire pillars, meteors |
 | `fx.ts` | Full-screen post shader: drunk/smoke/hell/rain/killer effects + per-mode art direction (`MODES`) |
-| `audio.ts` | Web Audio: engine, SFX, bit-crusher worklet, reverb/echo buses, song sequencer (`SONGS`, `STATIONS`), tape playback |
+| `audio.ts` | Web Audio: engine, SFX (horn, tire squeal, cough…), bit-crusher worklet, radio stations (`STATIONS`), step clock, tape playback, offline `renderSong` |
+| `music.ts` | The band: mixer (channel strips w/ pan, reverb/echo sends, partial sidechain duck, amp/cab inserts), every instrument, theory helpers (`chord`, `voiceLead`, `under`), melody notation (`mel`), drum patterns (`pat`) |
+| `songs.ts` | The compositions (`SONGS`): form (sections + chord charts), phrases, and a `play(x)` arrangement per song |
 | `mixtape.ts` | IndexedDB storage for user-supplied audio files |
 | `bonus.ts` | Masks, phone missions, voicemails, grading data |
 | `art.ts` | All canvas-generated textures |
@@ -53,6 +55,10 @@ Notes for working on HELL YEAH SIMULATOR. User-facing docs are in `README.md`.
 - **Rearview mirror** must stay inside the top of the frame (y ≈ 1.40 at z −0.45 with the −0.12 camera pitch); higher and it's silently off-screen.
 - **Steering power:** `cab.steerPower` — right top 1, right horn 0.9, left top 0.85, left graze 0.5, no hands 0 (the NO HANDS pop needs 0.3 s of zero hands).
 - **Music:** all songs are original. Never embed or transcribe copyrighted songs — the mixtape lets users load their own files.
+  Songs are written in a convenient key and moved with `key`/section `tr`. `mel()` warns in the console if a bar line
+  doesn't land on a bar. Music bypasses the bit-crusher (aliasing) except in DEEP FRIED; lo-fi modes get a lowpass.
+  Mix by numbers: `HYS.render(song, bar, secs, ['lead'])` renders a soloed stem to WAV; aim for lead/vocal ≈ −4 LU
+  under the mix, kick/snare ≈ −5…−8, bass ≈ −4…−6, pads/arps ≈ −12, hats ≈ −17. `HYS.song('outrun')` forces a song.
 - Post shader runs **after** `OutputPass` (display space). Colors > 1 in `glow()` materials feed bloom.
 
 ## Testing / debugging

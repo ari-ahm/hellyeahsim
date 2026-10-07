@@ -8,7 +8,7 @@ import './style.css';
 import { World, roadCenter, roadSlope, ROAD_HALF } from './world';
 import { Traffic } from './traffic';
 import { Interior } from './interior';
-import { AudioSys, STATIONS } from './audio';
+import { AudioSys, STATIONS, renderSong } from './audio';
 import { MindShader, MODES } from './fx';
 import { loadArmData } from './arms';
 import { FX } from './hellfx';
@@ -512,7 +512,6 @@ function simulate(dt: number) {
     S.meter = Math.min(1, S.meter + dt * 0.09);
     S.points += dt * 120 * mult();
     S.shake = Math.max(S.shake, 0.012);
-    if (Math.random() < dt * 14) audio.screech(1);
     if (S.burnT > 0.6 && S.burnT - dt <= 0.6) pop('BURNOUT', { color: '#ddd', sub: 'tires: deceased' });
     fx.burnout(new THREE.Vector3(S.x, 0.3, -S.s + 2.2), dt);
   } else S.burnT = 0;
@@ -869,7 +868,7 @@ function frame() {
 
   // audio
   const rpm = audio.update({
-    speed: Math.abs(S.v), throttle: S.throttle, offroad: S.offroad, siren: S.cop.on ? clamp(1.4 - S.cop.gap / 150, 0.15, 1) : 0, time: S.time, hell,
+    speed: Math.abs(S.v), throttle: S.throttle, offroad: S.offroad, siren: S.cop.on ? clamp(1.4 - S.cop.gap / 150, 0.15, 1) : 0, time: S.time, hell, burn: S.burnout ? 1 : 0,
   });
   if (rpm) S.rpm = rpm;
   djCycle += dt;
@@ -927,7 +926,11 @@ cab.root.add(dbgCam);
   steer(x: number | null) { dbgSteer = x; },
   gfx(n: number) { gfx = n; applyMode(); },
   cough: (n: number) => coughFit(n),
+  /** debug: force a radio song by id (null to release); render one offline to a WAV blob */
+  song(name: string | null) { audio.force = name; },
+  render: renderSong,
   world, traffic, renderer,
+  audio,
 };
 
 initTouch({

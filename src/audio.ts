@@ -1,5 +1,9 @@
 // Every sound in this game is synthesized live. No samples. Just math and poor decisions.
-import { pick, rand, clamp } from './util';
+import { rand, clamp } from './util';
+import { Band, songBars } from './music';
+import { SONGS } from './songs';
+
+export { SONGS };
 
 export interface Station {
   name: string;
@@ -8,20 +12,6 @@ export interface Station {
   tape?: boolean;
   dj: string[];
 }
-
-/** every song here is an original composition. no lawyers were summoned. */
-export const SONGS: Record<string, { title: string; artist: string; tempo: number; bars: number; gain: number; verb: number }> = {
-  hellyeah: { title: 'HELL YEAH (EXTENDED)', artist: 'THE FOREARMS', tempo: 152, bars: 32, gain: 0.5, verb: 0.18 },
-  midnight: { title: 'MIDNIGHT CALL', artist: 'NIGHT DRIVER', tempo: 96, bars: 32, gain: 0.85, verb: 0.45 },
-  outrun: { title: 'NEON OVERDRIVE', artist: 'LASER WOLF 1986', tempo: 118, bars: 32, gain: 0.7, verb: 0.3 },
-  storm: { title: 'KILLER WEATHER', artist: 'THE LIZARD KINGS OF HIGHWAY 666', tempo: 86, bars: 32, gain: 0.85, verb: 0.5 },
-  vice1: { title: 'PASTEL SUITS', artist: 'SUNBURN & THE TAN LINES', tempo: 112, bars: 32, gain: 0.75, verb: 0.4 },
-  vice2: { title: 'OCEAN AVENUE', artist: 'MALIBU COWBELL ORCHESTRA', tempo: 104, bars: 32, gain: 0.75, verb: 0.3 },
-  doom1: { title: 'GUTS ON THE GRILLE', artist: 'SLAYER OF DEER (MIDNIGHT MIX)', tempo: 135, bars: 32, gain: 0.55, verb: 0.15 },
-  doom2: { title: 'THEY FEAR THE FOREARM', artist: 'INFERNAL CHASSIS', tempo: 166, bars: 32, gain: 0.55, verb: 0.12 },
-  lofi: { title: 'BEATS TO CRY & DRIVE TO', artist: 'LOFI GOAT', tempo: 78, bars: 64, gain: 0.95, verb: 0.35 },
-  deer: { title: 'ETERNAL BLEAT', artist: 'THE DEER YOU HIT', tempo: 70, bars: 64, gain: 0.85, verb: 0.6 },
-};
 
 export const STATIONS: Station[] = [
   {
@@ -106,6 +96,47 @@ export const STATIONS: Station[] = [
   },
 ];
 
+/** debug: render `secs` of a song from bar `bar` offline, as a 16-bit stereo WAV */
+export async function renderSong(name: string, bar = 0, secs = 30, only: string[] | null = null, rate = 44100): Promise<Blob> {
+  const def = SONGS[name];
+  const ctx = new OfflineAudioContext(2, Math.floor(rate * secs), rate);
+  const g = ctx.createGain();
+  g.gain.value = def.gain * 0.6;
+  const comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -16;
+  comp.ratio.value = 5;
+  g.connect(comp).connect(ctx.destination);
+  const band = new Band(ctx, g);
+  band.only = only;
+  band.setSong(def);
+  const dur = 60 / def.tempo / 4;
+  const i0 = bar * (def.spb ?? 16);
+  for (let i = i0; (i - i0) * dur < secs; i++) band.step(i, 0.05 + (i - i0) * dur);
+  const buf = await ctx.startRendering();
+  const n = buf.length;
+  const out = new DataView(new ArrayBuffer(44 + n * 4));
+  const str = (o: number, s: string) => [...s].forEach((c, k) => out.setUint8(o + k, c.charCodeAt(0)));
+  str(0, 'RIFF');
+  out.setUint32(4, 36 + n * 4, true);
+  str(8, 'WAVEfmt ');
+  out.setUint32(16, 16, true);
+  out.setUint16(20, 1, true);
+  out.setUint16(22, 2, true);
+  out.setUint32(24, rate, true);
+  out.setUint32(28, rate * 4, true);
+  out.setUint16(32, 4, true);
+  out.setUint16(34, 16, true);
+  str(36, 'data');
+  out.setUint32(40, n * 4, true);
+  const L = buf.getChannelData(0);
+  const R = buf.getChannelData(1);
+  for (let k = 0; k < n; k++) {
+    out.setInt16(44 + k * 4, clamp(L[k], -1, 1) * 32767, true);
+    out.setInt16(46 + k * 4, clamp(R[k], -1, 1) * 32767, true);
+  }
+  return new Blob([out.buffer], { type: 'audio/wav' });
+}
+
 export interface Tape {
   name: string;
   url: string;
@@ -129,12 +160,14 @@ export class AudioSys {
   private sirenG!: GainNode;
   private windG!: GainNode;
   private windF!: BiquadFilterNode;
+  private burnG!: GainNode;
   station = 0;
-  step = 0;
   private comp!: DynamicsCompressorNode;
-  private verb!: ConvolverNode;
-  private verbSend!: GainNode;
-  private nextScream = 0;
+  private out!: GainNode;
+  private musicLP!: BiquadFilterNode;
+  private musicDry!: GainNode;
+  private musicWet!: GainNode;
+  band: Band | null = null;
   private crusher: AudioWorkletNode | null = null;
   private crushCfg = { bits: 16, down: 1, drive: 1 };
   private drive!: GainNode;
@@ -151,27 +184,28 @@ export class AudioSys {
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -16;
     comp.ratio.value = 5;
-    comp.connect(ctx.destination);
+    this.out = ctx.createGain();
+    this.out.gain.value = this.muted ? 0 : 1;
+    comp.connect(this.out).connect(ctx.destination);
     this.master = ctx.createGain();
     this.master.gain.value = 0.85;
     this.master.connect(comp);
     this.comp = comp;
     this.setupCrusher();
+    // music skips the bit-crusher (sample-and-hold aliasing turns synths into hash). the lo-fi modes get a
+    // warm radio rolloff instead; only DEEP FRIED sends the band through the crusher, as a war crime.
     this.music = ctx.createGain();
     this.music.gain.value = 0.5;
-    this.music.connect(this.master);
-    // generated hall reverb so the radio sounds like a real place (a bad place)
-    const len = ctx.sampleRate * 2.6;
-    const ir = ctx.createBuffer(2, len, ctx.sampleRate);
-    for (let ch = 0; ch < 2; ch++) {
-      const d = ir.getChannelData(ch);
-      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3.2);
-    }
-    this.verb = ctx.createConvolver();
-    this.verb.buffer = ir;
-    this.verbSend = ctx.createGain();
-    this.verbSend.gain.value = 0.25;
-    this.music.connect(this.verbSend).connect(this.verb).connect(this.master);
+    this.musicLP = ctx.createBiquadFilter();
+    this.musicLP.frequency.value = 20000;
+    this.musicLP.Q.value = 0.5;
+    this.musicDry = ctx.createGain();
+    this.musicWet = ctx.createGain();
+    this.musicWet.gain.value = 0;
+    this.music.connect(this.musicLP);
+    this.musicLP.connect(this.musicDry).connect(comp);
+    this.musicLP.connect(this.musicWet).connect(this.master);
+    this.band = new Band(ctx, this.music);
     this.sfx = ctx.createGain();
     this.sfx.gain.value = 0.9;
     this.sfx.connect(this.master);
@@ -230,6 +264,52 @@ export class AudioSys {
     this.sirenO.connect(sf).connect(this.sirenG).connect(this.master);
     this.sirenO.start();
 
+    // tire squeal: two tones wandering on smoothed noise (stick-slip), resonant bands, rubber hiss, wheelspin rumble
+    this.burnG = ctx.createGain();
+    this.burnG.gain.value = 0;
+    this.burnG.connect(this.sfx);
+    const wander = ctx.createBiquadFilter();
+    wander.frequency.value = 9;
+    this.loopNoise().connect(wander);
+    const squeal = ctx.createGain();
+    squeal.gain.value = 0.55;
+    const flutter = ctx.createBiquadFilter();
+    flutter.frequency.value = 35;
+    const fg = ctx.createGain();
+    fg.gain.value = 2.2;
+    this.loopNoise().connect(flutter).connect(fg).connect(squeal.gain);
+    const sq1 = ctx.createBiquadFilter();
+    sq1.type = 'bandpass';
+    sq1.frequency.value = 1350;
+    sq1.Q.value = 3;
+    const sq2 = ctx.createBiquadFilter();
+    sq2.type = 'bandpass';
+    sq2.frequency.value = 2700;
+    sq2.Q.value = 4;
+    squeal.connect(sq1).connect(this.burnG);
+    squeal.connect(sq2).connect(this.burnG);
+    for (const [f, dev] of [[1180, 260], [1760, 380]]) {
+      const o = ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.value = f;
+      const wg = ctx.createGain();
+      wg.gain.value = dev * 6;
+      wander.connect(wg).connect(o.frequency);
+      o.connect(squeal);
+      o.start();
+    }
+    const hiss = ctx.createBiquadFilter();
+    hiss.type = 'highpass';
+    hiss.frequency.value = 3000;
+    const hg = ctx.createGain();
+    hg.gain.value = 0.35;
+    this.loopNoise().connect(hiss).connect(hg).connect(this.burnG);
+    const spin = ctx.createBiquadFilter();
+    spin.frequency.value = 140;
+    const sg = ctx.createGain();
+    sg.gain.value = 1.4;
+    this.loopNoise().connect(spin).connect(sg).connect(this.burnG);
+
     this.nextT = ctx.currentTime + 0.1;
     this.anchor = this.nextT;
     setInterval(() => this.schedule(), 25);
@@ -273,6 +353,10 @@ export class AudioSys {
     this.crusher.parameters.get('bits')!.setValueAtTime(bits, t);
     this.crusher.parameters.get('down')!.setValueAtTime(down, t);
     this.drive.gain.setTargetAtTime(drive, t, 0.05);
+    const fried = bits <= 6;
+    this.musicWet.gain.setTargetAtTime(fried ? 1 : 0, t, 0.05);
+    this.musicDry.gain.setTargetAtTime(fried ? 0 : 0.85, t, 0.05);
+    this.musicLP.frequency.setTargetAtTime(bits >= 16 ? 20000 : 26000 / down, t, 0.05);
   }
 
   private loopNoise() {
@@ -302,7 +386,10 @@ export class AudioSys {
   nowPlaying = '';
   onSong: ((title: string) => void) | null = null;
 
+  /** debug: force a song (HYS.song('outrun')), null to release */
+  force: string | null = null;
   private resolve(): { song?: string; tape?: Tape; loop?: boolean } {
+    if (this.force) return { song: this.force };
     if (this.context === 'menu') return this.custom.menu ? { tape: this.custom.menu, loop: true } : { song: 'midnight' };
     if (this.context === 'storm') return this.custom.storm ? { tape: this.custom.storm, loop: true } : { song: 'storm' };
     // HELL YEAH MODE hijacks any synth station with the heaviest thing we've got
@@ -340,7 +427,7 @@ export class AudioSys {
 
   setMuted(m: boolean) {
     this.muted = m;
-    if (this.ctx) this.master.gain.setTargetAtTime(m ? 0 : 0.85, this.ctx.currentTime, 0.05);
+    if (this.ctx) this.out.gain.setTargetAtTime(m ? 0 : 1, this.ctx.currentTime, 0.05);
     if (m) speechSynthesis?.cancel();
   }
 
@@ -373,446 +460,24 @@ export class AudioSys {
         this.anchor = this.nextT;
         const S = SONGS[prog.song];
         this.nowPlaying = `${S.title} — ${S.artist}`;
+        this.band!.setSong(S);
       } else this.nowPlaying = '';
       if (this.nowPlaying) this.onSong?.(this.nowPlaying);
-      const g = prog.song ? SONGS[prog.song] : { gain: 0.8, verb: 0.05 };
-      this.music.gain.setTargetAtTime(g.gain, ctx.currentTime, 0.3);
-      this.verbSend.gain.setTargetAtTime(g.verb, ctx.currentTime, 0.3);
+      this.music.gain.setTargetAtTime(prog.song ? SONGS[prog.song].gain * 0.6 : 0.8, ctx.currentTime, 0.3);
     }
     if (!this.song) return;
     const S = SONGS[this.song];
     const dur = 60 / S.tempo / 4;
     while (this.nextT < ctx.currentTime + 0.12) {
-      if (this.nextT >= ctx.currentTime - 0.05) this.playStep(this.song, this.songStep, this.nextT, dur);
+      if (this.nextT >= ctx.currentTime - 0.05) this.band!.step(this.songStep, this.nextT);
       this.nextT += dur;
       this.songStep++;
-      this.step++;
-      if (this.context === 'play' && this.songStep >= S.bars * 16 && STATIONS[this.station].songs.length > 1) {
+      if (this.context === 'play' && this.songStep >= songBars(S) * (S.spb ?? 16) && STATIONS[this.station].songs.length > 1) {
         this.songIdx++;
         this.progKey = '';
         break;
       }
     }
-  }
-
-  private playStep(song: string, i: number, t: number, dur: number) {
-    const st = i % 16;
-    const bar = Math.floor(i / 16) % 4;
-    const bar16 = Math.floor(i / 16) % 16;
-    if (song === 'midnight') return this.songMidnight(st, bar16, t, dur);
-    if (song === 'outrun') return this.songOutrun(st, bar16, t, dur);
-    if (song === 'storm') return this.songStorm(st, bar16, t, dur);
-    if (song === 'vice1') return this.songVice1(st, bar16, t, dur);
-    if (song === 'vice2') return this.songVice2(st, bar16, t, dur);
-    if (song === 'doom1') return this.songDoom1(i, st, bar16, t, dur);
-    if (song === 'doom2') return this.songDoom2(i, st, bar16, t, dur);
-    if (song === 'hellyeah') {
-      const roots = [40, 40, 36, 38];
-      const r = roots[bar];
-      const hell = this.hell > 0.5;
-      if ([0, 3, 8, 11].includes(st) || (hell && st % 2 === 0)) this.kick(t, 0.9);
-      if (st === 4 || st === 12 || (bar === 3 && st >= 13)) this.snare(t, bar === 3 && st >= 13 ? 0.35 : 0.5);
-      if (st % 2 === 0) this.hat(t, st % 4 === 2 ? 0.07 : 0.04);
-      if (st === 0 && bar === 0) this.crash(t);
-      const chug = [0, 2, 3, 6, 8, 10, 11, 14];
-      if (chug.includes(st)) {
-        const accent = st === 0 || st === 8;
-        this.power(t, r + 12, accent ? dur * 3.5 : dur * 0.9, accent ? 0.2 : 0.14);
-        this.bass(t, r, dur * 1.5, 0.22);
-      }
-      if (hell && st % 2 === 0) this.lead(t, pick([64, 67, 69, 71, 74, 76, 79]), dur * 1.8);
-    } else if (song === 'lofi') {
-      // LOFI GOAT RADIO: dusty boom-bap, rhodes, a bass that has seen things
-      const swing = st % 2 === 1 ? dur * 0.38 : 0;
-      const tt = t + swing;
-      const chords = [[53, 57, 60, 64, 67], [52, 55, 59, 62, 66], [50, 53, 57, 60, 64], [48, 52, 55, 59, 62]];
-      const roots = [41, 40, 38, 36];
-      const ch = chords[bar];
-      if (st === 0) this.rhodes(tt, ch, dur * 9, 0.11);
-      if (st === 10) this.rhodes(tt, ch.slice(1, 4).map((m) => m + 12), dur * 5, 0.06);
-      if (st === 0 || st === 7 || st === 10) this.kick(tt, st === 7 ? 0.45 : 0.85);
-      if (st === 4 || st === 12) this.snare(tt, 0.42, 1100);
-      if (st === 15 && Math.random() < 0.5) this.snare(tt, 0.12, 1100);
-      if (st % 2 === 0) this.hat(tt, st % 4 === 2 ? 0.07 : 0.045);
-      if (st === 0) this.lofiBass(tt, roots[bar], dur * 6, 0.32);
-      if (st === 10) this.lofiBass(tt, roots[bar] + 7, dur * 3, 0.22);
-      if (st === 14 && Math.random() < 0.6) this.lofiBass(tt, roots[bar] + 12, dur * 1.5, 0.16);
-      if (Math.random() < 0.22) this.pluck(tt, pick([72, 74, 76, 79, 81]), 0.07);
-      this.crackle(t);
-      if (Math.random() < 0.5) this.crackle(t + dur * 0.5);
-      if (st === 0) this.hiss(t, dur * 16);
-    } else if (song === 'deer') {
-      // DEER SCREAMS 24/7: funeral doom for every deer you've ever hit
-      if (st === 0) {
-        this.power(t, 28, dur * 15, 0.13);
-        this.pad(t, [40, 41, 47], dur * 16, 0.07);
-      }
-      if (st === 0 || st === 6 || st === 10) this.kick(t, 1.0);
-      if (st === 8) this.snare(t, 0.5);
-      if (st % 4 === 2) this.hat(t, 0.05);
-      if (this.step >= this.nextScream) {
-        this.nextScream = this.step + Math.floor(rand(5, 12));
-        if (Math.random() < 0.3) this.bleat(t, 0.4);
-        else this.deerScream(t, 0.45);
-        if (Math.random() < 0.35) this.deerScream(t + rand(0.1, 0.4), 0.3);
-      }
-    }
-  }
-
-  // ================= original songs =================
-  /** MIDNIGHT CALL — Night Driver. 96bpm, A minor. lonely, wet asphalt, a phone that won't ring. */
-  private songMidnight(st: number, bar: number, t: number, dur: number) {
-    const prog = [[57, 60, 64], [53, 57, 60, 64], [50, 53, 57], [52, 56, 59]];
-    const roots = [33, 29, 26, 28];
-    const c = Math.floor(bar / 2) % 4;
-    const intro = bar < 2;
-    if (!intro && st % 4 === 0) this.kick(t, 0.85);
-    if (!intro && (st === 4 || st === 12)) this.gatedSnare(t, 0.5);
-    if (st % 2 === 1 && bar >= 4) this.hat(t, 0.04);
-    if (st % 2 === 0 && !intro) this.synthBass(t, roots[c] + 12 + (st % 4 === 2 ? 12 : 0), dur * 1.7, 0.24);
-    if (st === 0 && bar % 2 === 0) this.darkPad(t, prog[c], dur * 32, 0.07);
-    if (st === 0 && bar % 2 === 0 && bar >= 6) this.choir(t, prog[c].map((m) => m + 12), dur * 32, 0.045);
-    const MEL = [76, 0, 0, 0, 74, 0, 72, 0, 69, 0, 0, 0, 0, 0, 67, 69, 72, 0, 0, 0, 71, 0, 69, 0, 64, 0, 0, 0, 0, 0, 0, 0];
-    const MEL2 = [69, 0, 72, 0, 76, 0, 0, 0, 77, 0, 76, 0, 74, 0, 0, 0, 72, 0, 0, 0, 74, 0, 71, 0, 68, 0, 0, 0, 0, 0, 0, 0];
-    if (bar >= 8 && bar < 24) {
-      const m = (bar >= 16 ? MEL2 : MEL)[(bar % 2) * 16 + st];
-      if (m) this.synLead(t, m, dur * 3.2, 0.075);
-    }
-    if (bar >= 20) this.arp(t, prog[c][st % prog[c].length] + 24, dur * 0.8, 0.028);
-    if (st === 0 && bar % 8 === 0) this.crash(t);
-  }
-
-  /** NEON OVERDRIVE — Laser Wolf 1986. 118bpm, D minor, 16th-note arps at illegal speeds. */
-  private songOutrun(st: number, bar: number, t: number, dur: number) {
-    const prog = [[62, 65, 69], [58, 62, 65], [60, 64, 67], [57, 60, 64]];
-    const roots = [38, 34, 36, 33];
-    const c = bar % 4;
-    if (st % 4 === 0) this.kick(t, 0.95);
-    if (st === 4 || st === 12) this.gatedSnare(t, 0.55);
-    this.hat(t, st % 2 ? 0.025 : 0.05);
-    this.synthBass(t, roots[c] + (st % 2 ? 24 : 12), dur * 0.85, 0.2);
-    if (bar >= 2) this.arp(t, prog[c][st % 3] + (st % 6 < 3 ? 12 : 24), dur * 0.7, 0.032);
-    if (st === 0) this.darkPad(t, prog[c], dur * 16, 0.05);
-    if (bar >= 8 && bar < 16 || bar >= 20) {
-      const L = [[74, 77], [74, 70], [72, 76], [69, 72]][c];
-      if (st === 0) this.synLead(t, L[0] + 12, dur * 7.5, 0.07);
-      if (st === 8) this.synLead(t, L[1] + 12, dur * 7.5, 0.07);
-    }
-    if (st === 0 && bar % 4 === 0) this.crash(t);
-  }
-
-  /** KILLER WEATHER — The Lizard Kings of Highway 666. 86bpm, E dorian, rain on the electric piano. */
-  private songStorm(st: number, bar: number, t: number, dur: number) {
-    const sw = st % 2 === 1 ? dur * 0.3 : 0;
-    const tt = t + sw;
-    const form = [0, 0, 5, 5, 0, 0, 5, 5, -4, -4, -5, -5, 0, 0, 5, 5];
-    const chordsBy: Record<number, number[]> = { 0: [52, 55, 59, 62], 5: [57, 61, 64, 67], [-4]: [48, 52, 55, 59], [-5]: [47, 51, 54, 57] };
-    const tr = form[bar % 16];
-    const riff: Record<number, number> = { 0: 40, 3: 40, 6: 35, 7: 38, 8: 40, 11: 43, 12: 45, 14: 43 };
-    if (riff[st] !== undefined) this.synthBass(tt, riff[st] + tr, dur * 1.4, 0.26, 700);
-    if (st === 0) this.rhodes(tt, chordsBy[tr], dur * 10, 0.1);
-    if (st === 10) this.rhodes(tt, chordsBy[tr].slice(1).map((m) => m + 12), dur * 4, 0.055);
-    if (st === 0 || st === 7 || st === 10) this.kick(tt, 0.7);
-    if (st === 4 || st === 12) this.brush(tt, 0.4);
-    if (st % 2 === 0) this.ride(tt, st === 14 ? 0.09 : 0.05);
-    const lick = tr === -5 ? [78, 75, 71, 69, 66, 64, 63, 59] : [79, 76, 74, 71, 69, 67, 64, 62];
-    if ((bar % 8 >= 4) && st >= 8) this.organ(tt, lick[st - 8] + (tr === 5 ? 5 : 0), dur * 0.95, 0.05);
-    if ((bar % 8 < 4) && bar >= 4 && st === 0) this.organ(tt, 64 + tr, dur * 14, 0.035);
-    if (st === 0 && bar % 8 === 3 && Math.random() < 0.7) this.thunder(t + rand(0, 1), 0.5);
-  }
-
-  /** PASTEL SUITS — Sunburn & The Tan Lines. 112bpm, C major, gated drums, FM piano, regret-free. */
-  private songVice1(st: number, bar: number, t: number, dur: number) {
-    const prog = [[60, 64, 67, 71], [57, 60, 64, 67], [53, 57, 60, 64], [55, 59, 62, 65]];
-    const roots = [36, 33, 29, 31];
-    const c = bar % 4;
-    if (st === 0 || st === 8 || (st === 6 && bar % 2)) this.kick(t, 0.9);
-    if (st === 4 || st === 12) { this.gatedSnare(t, 0.6); this.clap(t, 0.25); }
-    if (st % 2 === 0) this.hat(t, st % 4 === 2 ? 0.07 : 0.035);
-    if ([0, 3, 6, 10].includes(st)) this.fmKeys(t, prog[c], dur * (st === 0 ? 3 : 2), 0.05);
-    if ([0, 3, 6, 8, 10, 13, 14].includes(st)) this.slap(t, roots[c] + (st === 6 || st === 14 ? 24 : 12), dur * 0.9, 0.26);
-    if (bar >= 8 && (st === 2 || st === 10)) this.cowbell(t, 0.07);
-    if (bar >= 8 && bar < 24) {
-      const MEL = [76, 0, 79, 0, 81, 0, 79, 76, 74, 0, 72, 0, 74, 0, 76, 0];
-      const m = MEL[st];
-      if (m && bar % 2 === 0) this.fmBell(t, m + (c === 2 ? -3 : 0), dur * 2, 0.05);
-    }
-    if (st === 0 && bar % 4 === 0) this.crash(t);
-  }
-
-  /** OCEAN AVENUE — Malibu Cowbell Orchestra. 104bpm, E minor funk, congas, a guitar that owns a yacht. */
-  private songVice2(st: number, bar: number, t: number, dur: number) {
-    const minor = Math.floor(bar / 2) % 2 === 0;
-    const root = minor ? 40 : 45;
-    const ch = minor ? [55, 59, 62, 66] : [57, 61, 64, 67];
-    if (st === 0 || st === 10) this.kick(t, 0.9);
-    if (st === 4 || st === 12) this.snare(t, 0.45, 1400);
-    this.hat(t, st % 4 === 2 ? 0.06 : 0.025);
-    if ([1, 4, 7, 10, 13].includes(st)) this.funkGtr(t, ch, dur * 0.6, 0.06);
-    const bassL: Record<number, number> = { 0: 0, 3: 12, 5: 0, 7: 10, 8: 12, 11: 7, 14: 0 };
-    if (bassL[st] !== undefined) this.slap(t, root + bassL[st], dur * 0.8, 0.28);
-    if (Math.random() < 0.35 && st % 2 === 1) this.conga(t, pick([180, 240, 320]), 0.12);
-    if (st === 12 && bar % 2 === 1) this.cowbell(t, 0.06);
-    if (bar >= 8 && st === 0 && bar % 2 === 0) this.fmKeys(t, ch.map((m) => m + 12), dur * 14, 0.035);
-  }
-
-  /** GUTS ON THE GRILLE — 135bpm, drop-D-minus-a-lot. 7-against-16 chugs, synth bass that eats metal. */
-  private songDoom1(i: number, st: number, bar: number, t: number, dur: number) {
-    const R = [26, 26, 27, 24][bar % 4]; // D1, D1, Eb1, C1
-    const breakdown = bar >= 12 && bar < 16;
-    const poly = i % 7;
-    const hit = breakdown ? [0, 3, 6, 8, 11].includes(st) : poly === 0 || poly === 2 || poly === 3;
-    if (hit) {
-      this.chug(t, R, dur * (poly === 3 ? 1.8 : 0.8), 0.24);
-      this.kick(t, 1.0);
-    } else if (st % 2 === 0) this.kick(t, 0.55);
-    if (st === 4 || st === 12) this.indSnare(t, 0.6);
-    if (st % 2 === 0) this.hat(t, 0.05);
-    if (st === 0) this.growl(t, R + 12, dur * 16, 0.2);
-    if (bar % 4 === 3 && st >= 12) this.chug(t, R, dur * 0.3, 0.2); // stutter fill
-    if (bar >= 4 && bar < 12 && st === 8 && bar % 2) this.lead(t, R + 39 + pick([0, 1, 3]), dur * 6);
-    if (st === 0 && bar % 4 === 0) { this.crash(t); this.metalHit(t, 0.4); }
-  }
-
-  /** THEY FEAR THE FOREARM — 166bpm, blast beats, tremolo riffs, a choir of the damned (deer). */
-  private songDoom2(i: number, st: number, bar: number, t: number, dur: number) {
-    const R = [28, 31, 29, 27][bar % 4];
-    const blast = bar >= 4 && bar < 12;
-    if (blast) {
-      if (st % 2 === 0) this.kick(t, 0.9);
-      if (st % 2 === 1) this.indSnare(t, 0.35);
-      this.chug(t, R + (st % 4 === 3 ? 1 : 0), dur * 0.7, 0.18);
-    } else {
-      if ([0, 3, 6, 10].includes(st)) { this.kick(t, 1); this.chug(t, R, dur * 1.5, 0.24); }
-      if (st === 8) this.indSnare(t, 0.65);
-      if (st === 14) this.chug(t, R + 6, dur, 0.22); // the tritone. obviously.
-    }
-    if (st % 4 === 0) this.ride(t, 0.05);
-    if (st === 0 && bar % 2 === 0) { this.growl(t, R + 12, dur * 32, 0.18); this.choir(t, [R + 36, R + 39, R + 42], dur * 32, 0.04); }
-    if (st === 0 && bar % 4 === 0) { this.crash(t); this.metalHit(t, 0.5); }
-    void i;
-  }
-
-  // ================= instruments =================
-  private chug(t: number, m: number, len: number, v: number) {
-    // nine-string palm mute: stacked saws, savage distortion, then a lowpass "palm"
-    const g = this.gain();
-    this.env(g, t, 0.002, v, len);
-    const palm = this.filter('lowpass', 1400, g, 1.2);
-    palm.frequency.setValueAtTime(2600, t);
-    palm.frequency.exponentialRampToValueAtTime(700, t + 0.06);
-    const ws = this.ctx!.createWaveShaper();
-    ws.curve = this.dist;
-    ws.oversample = '2x';
-    ws.connect(this.filter('peaking', 120, palm, 1));
-    const pre = this.gain(ws);
-    pre.gain.value = 1.4;
-    for (const [iv, det] of [[0, -9], [0, 9], [7, 0], [12, 4]]) this.osc('sawtooth', mtof(m + 12 + iv), t, len, pre).detune.value = det;
-  }
-  private growl(t: number, m: number, len: number, v: number) {
-    const ctx = this.ctx!;
-    const g = this.gain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(v, t + 0.05);
-    g.gain.setValueAtTime(v, t + len - 0.05);
-    g.gain.linearRampToValueAtTime(0.0001, t + len);
-    const f = this.filter('lowpass', 500, g, 9);
-    const lfo = ctx.createOscillator();
-    lfo.frequency.value = SONGS[this.song ?? 'doom1'].tempo / 60 * 2;
-    const lg = ctx.createGain();
-    lg.gain.value = 420;
-    lfo.connect(lg).connect(f.frequency);
-    lfo.start(t);
-    lfo.stop(t + len);
-    const ws = ctx.createWaveShaper();
-    ws.curve = this.dist;
-    ws.connect(f);
-    this.osc('sawtooth', mtof(m), t, len, ws);
-    this.osc('square', mtof(m - 12), t, len, ws).detune.value = 7;
-  }
-  private indSnare(t: number, v: number) {
-    this.snare(t, v, 1200);
-    const g = this.gain();
-    this.env(g, t, 0.001, v * 0.5, 0.09);
-    const ws = this.ctx!.createWaveShaper();
-    ws.curve = this.dist;
-    ws.connect(this.filter('bandpass', 2400, g, 1.5));
-    this.noiseAt(t, 0.1, ws);
-  }
-  private metalHit(t: number, v: number) {
-    const g = this.gain();
-    this.env(g, t, 0.001, v, 1.2);
-    const f = this.filter('bandpass', 1800, g, 12);
-    for (const fr of [233, 377, 610, 987]) this.osc('square', fr, t, 1.2, f);
-  }
-
-  private echoIn: GainNode | null = null;
-  private echoBus() {
-    if (this.echoIn) return this.echoIn;
-    const ctx = this.ctx!;
-    const inp = ctx.createGain();
-    const d = ctx.createDelay(1.5);
-    d.delayTime.value = 0.375;
-    const fb = ctx.createGain();
-    fb.gain.value = 0.38;
-    const lp = ctx.createBiquadFilter();
-    lp.frequency.value = 2400;
-    inp.connect(d).connect(lp).connect(fb).connect(d);
-    lp.connect(this.music);
-    this.echoIn = inp;
-    return inp;
-  }
-  private synthBass(t: number, m: number, len: number, v: number, cut = 1600) {
-    const g = this.gain();
-    this.env(g, t, 0.004, v, len);
-    const f = this.filter('lowpass', cut, g, 6);
-    f.frequency.setValueAtTime(cut, t);
-    f.frequency.exponentialRampToValueAtTime(cut * 0.18 + 60, t + len);
-    const o = this.osc('sawtooth', mtof(m), t, len, f);
-    const o2 = this.osc('square', mtof(m - 12), t, len, f);
-    o.detune.value = -6;
-    o2.detune.value = 4;
-  }
-  private darkPad(t: number, ms: number[], len: number, v: number) {
-    const g = this.gain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(v, t + len * 0.2);
-    g.gain.linearRampToValueAtTime(v * 0.8, t + len * 0.8);
-    g.gain.linearRampToValueAtTime(0.0001, t + len);
-    const f = this.filter('lowpass', 850, g, 1.5);
-    for (const m of ms) for (const det of [-11, 0, 12]) {
-      const o = this.osc('sawtooth', mtof(m), t, len, f);
-      o.detune.value = det;
-    }
-  }
-  private choir(t: number, ms: number[], len: number, v: number) {
-    const g = this.gain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(v, t + len * 0.3);
-    g.gain.linearRampToValueAtTime(0.0001, t + len);
-    const f1 = this.filter('bandpass', 620, g, 7);
-    const f2 = this.filter('bandpass', 1180, g, 9);
-    for (const m of ms) {
-      const o = this.osc('sawtooth', mtof(m), t, len, f1);
-      o.connect(f2);
-      this.vibrato(o, 5, 5, t, len);
-    }
-  }
-  private synLead(t: number, m: number, len: number, v: number) {
-    const g = this.gain();
-    this.env(g, t, 0.02, v, len);
-    g.connect(this.echoBus());
-    const f = this.filter('lowpass', 2600, g, 2);
-    const o = this.osc('sawtooth', mtof(m), t, len, f);
-    const o2 = this.osc('square', mtof(m), t, len, f);
-    o2.detune.value = 8;
-    this.vibrato(o, 5.5, 9, t + 0.15, len);
-  }
-  private arp(t: number, m: number, len: number, v: number) {
-    const g = this.gain();
-    this.env(g, t, 0.002, v, len);
-    g.connect(this.echoBus());
-    this.osc('square', mtof(m), t, len, this.filter('lowpass', 3200, g));
-  }
-  private gatedSnare(t: number, v: number) {
-    this.snare(t, v);
-    // big 80s gated room: loud for 180ms, then it simply stops existing
-    const g = this.gain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(v * 0.5, t + 0.01);
-    g.gain.setValueAtTime(v * 0.42, t + 0.17);
-    g.gain.linearRampToValueAtTime(0.0001, t + 0.2);
-    this.noiseAt(t, 0.22, this.filter('bandpass', 1900, g, 0.6));
-  }
-  private clap(t: number, v: number) {
-    for (let i = 0; i < 3; i++) {
-      const g = this.gain();
-      this.env(g, t + i * 0.011, 0.001, v, 0.05 + (i === 2 ? 0.08 : 0));
-      this.noiseAt(t + i * 0.011, 0.15, this.filter('bandpass', 1300, g, 2));
-    }
-  }
-  private brush(t: number, v: number) {
-    const g = this.gain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(v, t + 0.025);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
-    this.noiseAt(t, 0.27, this.filter('bandpass', 2600, g, 0.8));
-  }
-  private ride(t: number, v: number) {
-    const g = this.gain();
-    this.env(g, t, 0.001, v, 0.45);
-    this.noiseAt(t, 0.5, this.filter('bandpass', 8500, g, 2.5));
-    const g2 = this.gain();
-    this.env(g2, t, 0.001, v * 0.4, 0.35);
-    for (const f of [3300, 4720, 5880]) this.osc('square', f, t, 0.4, this.filter('highpass', 6000, g2));
-  }
-  private organ(t: number, m: number, len: number, v: number) {
-    // a cheap combo organ, slightly out of tune, played by someone in leather pants
-    const g = this.gain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(v, t + 0.008);
-    g.gain.setValueAtTime(v, t + len);
-    g.gain.linearRampToValueAtTime(0.0001, t + len + 0.05);
-    const trem = this.ctx!.createGain();
-    trem.connect(this.filter('lowpass', 3400, g, 0.8));
-    const lfo = this.ctx!.createOscillator();
-    lfo.frequency.value = 6.8;
-    const lg = this.ctx!.createGain();
-    lg.gain.value = 0.3;
-    lfo.connect(lg).connect(trem.gain);
-    lfo.start(t);
-    lfo.stop(t + len + 0.1);
-    this.osc('square', mtof(m), t, len + 0.05, trem).detune.value = 5;
-    this.osc('sawtooth', mtof(m + 12), t, len + 0.05, trem).detune.value = -7;
-    this.osc('sine', mtof(m + 19), t, len + 0.05, trem);
-  }
-  private fmBell(t: number, m: number, len: number, v: number, ratio = 3.5, index = 3) {
-    const ctx = this.ctx!;
-    const g = this.gain();
-    this.env(g, t, 0.003, v, len);
-    g.connect(this.echoBus());
-    const f = mtof(m);
-    const car = this.osc('sine', f, t, len, g);
-    const mod = ctx.createOscillator();
-    mod.frequency.value = f * ratio;
-    const mg = ctx.createGain();
-    mg.gain.setValueAtTime(f * index, t);
-    mg.gain.exponentialRampToValueAtTime(f * 0.2, t + len);
-    mod.connect(mg).connect(car.frequency);
-    mod.start(t);
-    mod.stop(t + len + 0.05);
-  }
-  private fmKeys(t: number, ms: number[], len: number, v: number) {
-    for (const m of ms) this.fmBell(t, m, len, v, 1, 2.2);
-  }
-  private slap(t: number, m: number, len: number, v: number) {
-    const g = this.gain();
-    this.env(g, t, 0.002, v, len);
-    const f = this.filter('lowpass', 3000, g, 4);
-    f.frequency.setValueAtTime(3000, t);
-    f.frequency.exponentialRampToValueAtTime(380, t + 0.12);
-    this.osc('square', mtof(m), t, len, f);
-  }
-  private funkGtr(t: number, ms: number[], len: number, v: number) {
-    const g = this.gain();
-    this.env(g, t, 0.002, v, len);
-    const f = this.filter('bandpass', 900, g, 3);
-    f.frequency.setValueAtTime(600, t);
-    f.frequency.exponentialRampToValueAtTime(2200, t + len * 0.6);
-    for (const m of ms) this.osc('sawtooth', mtof(m), t, len, f);
-  }
-  private conga(t: number, f: number, v: number) {
-    const g = this.gain();
-    this.env(g, t, 0.002, v, 0.22);
-    const o = this.osc('sine', f * 1.2, t, 0.25, g);
-    o.frequency.exponentialRampToValueAtTime(f, t + 0.05);
-  }
-  private cowbell(t: number, v: number) {
-    const g = this.gain();
-    this.env(g, t, 0.001, v, 0.3);
-    const f = this.filter('bandpass', 800, g, 3);
-    this.osc('square', 540, t, 0.32, f);
-    this.osc('square', 800, t, 0.32, f);
   }
 
   // ---------- storm ambience ----------
@@ -879,58 +544,6 @@ export class AudioSys {
     }
   }
 
-  private rhodes(t: number, ms: number[], len: number, v: number) {
-    const g = this.gain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(v, t + 0.01);
-    g.gain.exponentialRampToValueAtTime(v * 0.35, t + 0.5);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + len);
-    const trem = this.ctx!.createGain();
-    trem.connect(this.filter('lowpass', 2200, g));
-    const lfo = this.osc('sine', 4.6, t, len, this.ctx!.createGain());
-    const lg = this.ctx!.createGain();
-    lg.gain.value = 0.25;
-    lfo.disconnect();
-    lfo.connect(lg).connect(trem.gain);
-    for (const m of ms) {
-      const o = this.osc('sine', mtof(m), t + rand(0, 0.025), len, trem);
-      o.detune.value = Math.sin(this.ctx!.currentTime * 0.7) * 9;
-      const o2 = this.osc('triangle', mtof(m + 12), t, len * 0.4, trem);
-      o2.detune.value = 4;
-    }
-  }
-  private lofiBass(t: number, m: number, len: number, v: number) {
-    const g = this.gain();
-    this.env(g, t, 0.01, v, len);
-    this.osc('sine', mtof(m), t, len, g);
-    const g2 = this.gain();
-    this.env(g2, t, 0.005, v * 0.3, len * 0.5);
-    this.osc('triangle', mtof(m + 12), t, len * 0.5, this.filter('lowpass', 600, g2));
-  }
-  private hiss(t: number, len: number) {
-    const g = this.gain();
-    g.gain.setValueAtTime(0.018, t);
-    g.gain.setValueAtTime(0.018, t + len);
-    g.gain.linearRampToValueAtTime(0.0001, t + len + 0.05);
-    this.noiseAt(t, len + 0.05, this.filter('bandpass', 5000, g, 0.4));
-  }
-  private bleat(t: number, v: number) {
-    // a deer's "meh". deer do not actually sound like this. this is worse.
-    const g = this.gain();
-    this.env(g, t, 0.03, v, 0.7);
-    const am = this.ctx!.createGain();
-    am.connect(this.filter('bandpass', 1100, g, 2));
-    const lfo = this.ctx!.createOscillator();
-    lfo.frequency.value = 22;
-    const lg = this.ctx!.createGain();
-    lg.gain.value = 0.6;
-    lfo.connect(lg).connect(am.gain);
-    lfo.start(t);
-    lfo.stop(t + 0.8);
-    const o = this.osc('sawtooth', 380, t, 0.75, am);
-    o.frequency.linearRampToValueAtTime(330, t + 0.7);
-  }
-
   private env(g: GainNode, t: number, a: number, peak: number, d: number) {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(Math.max(peak, 0.0002), t + a);
@@ -973,19 +586,6 @@ export class AudioSys {
     const o = this.osc('sine', 150, t, 0.35, g);
     o.frequency.exponentialRampToValueAtTime(40, t + 0.12);
   }
-  private snare(t: number, v: number, hp = 1600) {
-    const g = this.gain();
-    this.env(g, t, 0.002, v, 0.17);
-    this.noiseAt(t, 0.2, this.filter('highpass', hp, g));
-    const g2 = this.gain();
-    this.env(g2, t, 0.002, v * 0.5, 0.08);
-    this.osc('triangle', 210, t, 0.1, g2);
-  }
-  private hat(t: number, v: number) {
-    const g = this.gain();
-    this.env(g, t, 0.001, v, 0.04);
-    this.noiseAt(t, 0.06, this.filter('highpass', 7500, g));
-  }
   private crash(t: number) {
     const g = this.gain();
     this.env(g, t, 0.002, 0.12, 1.4);
@@ -1005,20 +605,6 @@ export class AudioSys {
       o.detune.value = det;
     }
   }
-  private bass(t: number, m: number, len: number, v: number) {
-    const g = this.gain();
-    this.env(g, t, 0.004, v, len);
-    this.osc('square', mtof(m), t, len, this.filter('lowpass', 500, g));
-  }
-  private lead(t: number, m: number, len: number) {
-    const g = this.gain();
-    this.env(g, t, 0.01, 0.07, len);
-    const ws = this.ctx!.createWaveShaper();
-    ws.curve = this.dist;
-    ws.connect(this.filter('bandpass', 1800, g, 0.7));
-    const o = this.osc('sawtooth', mtof(m), t, len, ws);
-    this.vibrato(o, 6, 8, t, len);
-  }
   private vibrato(o: OscillatorNode, rate: number, depth: number, t: number, len: number) {
     const lfo = this.ctx!.createOscillator();
     lfo.frequency.value = rate;
@@ -1027,27 +613,6 @@ export class AudioSys {
     lfo.connect(g).connect(o.frequency);
     lfo.start(t);
     lfo.stop(t + len + 0.05);
-  }
-  private pad(t: number, ms: number[], len: number, v: number) {
-    const g = this.gain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(v, t + len * 0.25);
-    g.gain.linearRampToValueAtTime(0.0001, t + len);
-    const lp = this.filter('lowpass', 1100, g);
-    for (const m of ms) {
-      const o = this.osc('triangle', mtof(m), t, len, lp);
-      o.detune.value = rand(-10, 10);
-    }
-  }
-  private pluck(t: number, m: number, v: number) {
-    const g = this.gain();
-    this.env(g, t, 0.003, v, 0.5);
-    this.osc('sine', mtof(m), t, 0.55, g);
-  }
-  private crackle(t: number) {
-    const g = this.gain();
-    this.env(g, t, 0.001, 0.05, 0.01);
-    this.noiseAt(t, 0.02, this.filter('highpass', 3000, g));
   }
   private deerScream(t: number, v: number, dest?: AudioNode) {
     // two formants + breath noise, pitch shrieks up then collapses
@@ -1071,7 +636,7 @@ export class AudioSys {
   }
 
   // ---------- continuous ----------
-  update(p: { speed: number; throttle: number; offroad: boolean; siren: number; time: number; hell: number }) {
+  update(p: { speed: number; throttle: number; offroad: boolean; siren: number; time: number; hell: number; burn?: number }) {
     const ctx = this.ctx;
     if (!ctx) return;
     this.hell = p.hell;
@@ -1091,7 +656,7 @@ export class AudioSys {
     this.windF.frequency.setTargetAtTime(400 + p.speed * 20, now, 0.1);
     this.sirenO.frequency.setTargetAtTime(750 + 380 * Math.sin(p.time * Math.PI * 1.6), now, 0.02);
     this.sirenG.gain.setTargetAtTime(p.siren * 0.06, now, 0.1);
-    void now;
+    this.burnG.gain.setTargetAtTime((p.burn ?? 0) * 0.16, now, p.burn ? 0.06 : 0.18);
     return rpm;
   }
 
@@ -1190,58 +755,65 @@ export class AudioSys {
     g.gain.linearRampToValueAtTime(0.0001, t + 1.3);
     this.noiseAt(t, 1.35, this.filter('bandpass', 700, g, 0.8));
   }
-  /** an actual cough: glottal burst, voiced bark, chest thump, wheezy inhale between. returns cough onsets (s) */
+  /**
+   * an actual cough: a glottal "k" burst, then turbulent air through the throat's vowel formants (a harsh "HUH"),
+   * a croaky voiced onset with jitter, and a chest thump. sometimes a wheezy inhale between. returns onsets (s)
+   */
   cough(n = 3): number[] {
     const out: number[] = [];
     if (!this.ctx) return [0];
+    const ctx = this.ctx;
     const t0 = this.t;
     let t = t0;
     for (let i = 0; i < n; i++) {
       if (i > 0 && Math.random() < 0.5) {
-        // wheeze: short desperate inhale
         const gw = this.sfxGain();
         gw.gain.setValueAtTime(0.0001, t);
-        gw.gain.linearRampToValueAtTime(0.12, t + 0.16);
+        gw.gain.linearRampToValueAtTime(0.1, t + 0.15);
         gw.gain.linearRampToValueAtTime(0.0001, t + 0.24);
-        const bw = this.filter('bandpass', 2600, gw, 6);
-        bw.frequency.linearRampToValueAtTime(3400, t + 0.22);
-        this.noiseAt(t, 0.26, bw);
+        const src = this.noiseAt(t, 0.26, this.filter('bandpass', 2300, gw, 4));
+        src.connect(this.filter('bandpass', 320, gw, 3));
         t += 0.26;
       }
       out.push(t - t0);
-      const v = rand(0.75, 1.0) * (i === 0 ? 1 : 0.85);
-      // 1) glottal burst: hard attack noise through two formants
-      const gb = this.sfxGain();
-      gb.gain.setValueAtTime(0.0001, t);
-      gb.gain.exponentialRampToValueAtTime(1.1 * v, t + 0.004);
-      gb.gain.exponentialRampToValueAtTime(0.25 * v, t + 0.06);
-      gb.gain.exponentialRampToValueAtTime(0.0001, t + 0.32);
-      const f1 = this.filter('bandpass', rand(650, 850), gb, 2.2);
-      const f2 = this.filter('bandpass', rand(1500, 1900), gb, 3);
-      const f3 = this.filter('highpass', 3000, gb, 0.7);
-      const src = this.noiseAt(t, 0.34, f1);
-      src.connect(f2);
-      src.connect(f3);
-      // 2) voiced bark: falling pitch "HUH"
-      const gv = this.sfxGain();
-      this.env(gv, t + 0.008, 0.012, 0.32 * v, 0.17);
-      const fv1 = this.filter('bandpass', 720, gv, 5);
-      const fv2 = this.filter('bandpass', 1150, gv, 6);
-      const o = this.osc('sawtooth', rand(135, 165), t + 0.008, 0.22, fv1);
-      o.connect(fv2);
-      o.frequency.exponentialRampToValueAtTime(rand(80, 95), t + 0.2);
-      // 3) chest thump
+      const v = rand(0.8, 1) * (i === 0 ? 1 : 0.85);
+      const len = rand(0.22, 0.3);
+      // the throat: four formants of a tense "ə/a"
+      const g = this.sfxGain();
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(v, t + 0.006);
+      g.gain.setTargetAtTime(v * 0.4, t + 0.012, 0.04);
+      g.gain.setTargetAtTime(0, t + len * 0.5, len * 0.22);
+      const src = ctx.createGain();
+      const sc = rand(0.9, 1.12);
+      for (const [f, q, a] of [[680, 5, 3.2], [1150, 6, 2.4], [2500, 7, 1.4], [3500, 8, 0.8]]) {
+        const mk = this.gain(g);
+        mk.gain.value = a;
+        src.connect(this.filter('bandpass', f * sc, mk, q));
+      }
+      const air = this.gain(src);
+      air.gain.value = 1.6;
+      this.noiseAt(t, len + 0.1, air);
+      // croaky voice: a jittery buzz at the start of the bark
+      const vg = this.gain(src);
+      vg.gain.setValueAtTime(0, t);
+      vg.gain.linearRampToValueAtTime(0.35, t + 0.015);
+      vg.gain.setTargetAtTime(0, t + 0.05, 0.05);
+      const o = this.osc('sawtooth', rand(115, 150), t, len, vg);
+      o.frequency.exponentialRampToValueAtTime(rand(75, 90), t + len);
+      const jg = ctx.createGain();
+      jg.gain.value = 30;
+      jg.connect(o.frequency);
+      this.noiseAt(t, len, this.filter('lowpass', 70, jg, 0.7));
+      // the "k": glottis letting go
+      const gk = this.sfxGain();
+      this.env(gk, t, 0.001, 0.6 * v, 0.012);
+      this.noiseAt(t, 0.03, this.filter('highpass', 1500, gk));
+      // chest thump
       const gt = this.sfxGain();
-      this.env(gt, t, 0.003, 0.7 * v, 0.12);
-      const th = this.osc('sine', 110, t, 0.15, gt);
-      th.frequency.exponentialRampToValueAtTime(45, t + 0.12);
-      // 4) phlegmy rattle tail
-      const gr = this.sfxGain();
-      this.env(gr, t + 0.05, 0.02, 0.1 * v, 0.2);
-      const rf = this.filter('bandpass', 380, gr, 3);
-      const ro = this.osc('square', 32, t + 0.05, 0.25, rf);
-      ro.detune.value = rand(-50, 50);
-      this.noiseAt(t + 0.05, 0.25, rf);
+      this.env(gt, t, 0.003, 0.6 * v, 0.1);
+      const th = this.osc('sine', 105, t, 0.15, gt);
+      th.frequency.exponentialRampToValueAtTime(48, t + 0.12);
       t += rand(0.3, 0.42);
     }
     return out;
@@ -1268,14 +840,27 @@ export class AudioSys {
     this.crashHit(0.6);
     this.deerScream(this.t + 0.05, 0.35, this.sfx);
   }
+  /** two disc horns a major third apart, diaphragms clipping, shaped by the bell. a real "HONK", not a doorbell */
   honk() {
     if (!this.ctx) return;
     const t = this.t;
     const g = this.sfxGain();
-    this.env(g, t, 0.01, 0.22, 0.45);
-    const lp = this.filter('lowpass', 1600, g);
-    this.osc('square', 349, t, 0.5, lp);
-    this.osc('square', 440, t, 0.5, lp);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.2, t + 0.015);
+    g.gain.setValueAtTime(0.2, t + 0.5);
+    g.gain.linearRampToValueAtTime(0, t + 0.56);
+    const bell = this.filter('peaking', 2400, this.filter('lowpass', 4200, g, 0.8), 1.2);
+    bell.gain.value = 7;
+    const ws = this.ctx.createWaveShaper();
+    ws.curve = this.dist;
+    ws.connect(this.filter('highpass', 300, bell, 0.7));
+    const pre = this.gain(ws);
+    pre.gain.value = 0.5;
+    for (const [f, det] of [[415, 0], [522, 6]]) {
+      const o = this.osc('sawtooth', f * 0.94, t, 0.6, pre);
+      o.frequency.exponentialRampToValueAtTime(f, t + 0.04);
+      o.detune.value = det + rand(-8, 8);
+    }
   }
   nearMiss() {
     if (!this.ctx) return;
@@ -1358,14 +943,6 @@ export class AudioSys {
     o.frequency.linearRampToValueAtTime(80, t + 1.2);
     this.vibrato(o, 9, 6, t, 1.3);
   }
-  screech(v: number) {
-    if (!this.ctx) return;
-    const t = this.t;
-    const g = this.sfxGain();
-    this.env(g, t, 0.01, 0.12 * v, 0.25);
-    this.noiseAt(t, 0.3, this.filter('bandpass', rand(1800, 2600), g, 6));
-  }
-
   speak(text: string, pitch = 0.1, rate = 0.85) {
     if (this.muted || typeof speechSynthesis === 'undefined') return;
     try {
