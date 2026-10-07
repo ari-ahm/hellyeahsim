@@ -775,12 +775,12 @@ export class Interior {
       ],
       L: [
         { t: 0, pose: null },
-        { t: 0.62, pose: null },
+        { t: 0.9, pose: null },
         { t: 1.3, pose: tabPose(0.012, 0.0, 0.25) },
         { t: 1.45, pose: tabPose(0.002, 0.0, 0.55) },
         { t: 1.72, pose: tabPose(0.02, 0.006, 1.0) },
         { t: 1.95, pose: tabPose(0.004, -0.004, 0.35) },
-        { t: 2.7, pose: null },
+        { t: 2.45, pose: null },
       ],
       events,
       cam: (t) => {
