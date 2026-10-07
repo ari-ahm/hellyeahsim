@@ -191,7 +191,7 @@ cab.hooks = {
   inhale: () => audio.inhale(),
   exhale: () => {
     audio.exhale();
-    S.lung = Math.max(0, S.lung - 9);
+    S.lung = Math.max(0, S.lung - 12.5); // 8 drags (two cigs) and the lungs are done
     S.steady = 12;
     S.meter = Math.min(1, S.meter + 0.06);
     S.cigs += 0.25;
@@ -626,7 +626,8 @@ function simulate(dt: number) {
 
   // ---- body stuff
   S.bac = Math.max(0, S.bac - dt * 0.006);
-  S.lung = Math.min(100, S.lung + dt * (S.terminal > 0 ? 0 : 0.8));
+  // no healing while the last drag's buzz (steady hands) lasts, so chain-smoking actually adds up
+  S.lung = Math.min(100, S.lung + dt * (S.terminal > 0 || S.steady > 0 ? 0 : 0.8));
   if (S.lung < 1 && S.terminal <= 0) {
     S.cancerT += dt;
     if (S.cancerT > 1) {

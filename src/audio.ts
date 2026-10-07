@@ -943,19 +943,7 @@ export class AudioSys {
     o.frequency.linearRampToValueAtTime(80, t + 1.2);
     this.vibrato(o, 9, 6, t, 1.3);
   }
-  speak(text: string, pitch = 0.1, rate = 0.85) {
-    if (this.muted || typeof speechSynthesis === 'undefined') return;
-    try {
-      speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.pitch = pitch;
-      u.rate = rate;
-      u.volume = 1;
-      const v = speechSynthesis.getVoices().find((v) => /en[-_](US|GB)/i.test(v.lang) && /male|david|daniel|fred|alex/i.test(v.name));
-      if (v) u.voice = v;
-      speechSynthesis.speak(u);
-    } catch {
-      /* the goat is speechless */
-    }
-  }
+  /** voice lines used browser TTS, which sounds different (or silent) on every browser/OS. disabled;
+   *  the popups carry the text. call sites stay so real voice clips can slot in later. */
+  speak(_text: string, _pitch = 0.1, _rate = 0.85) {}
 }
